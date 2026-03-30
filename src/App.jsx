@@ -289,7 +289,7 @@ export default function App() {
   useEffect(() => { if (authed) loadAudits(); }, [authed]);
 
   const loadAudits = async () => {
-    const { data } = await supabase.from('audits').select('*').eq('.is('deleted_at', null).order('created_at', { ascending: false });
+    const { data } = await supabase.from('audits').select('*').is('deleted_at', null).order('created_at', { ascending: false });
     setAudits(data || []);
   };
 
