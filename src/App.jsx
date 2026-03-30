@@ -165,6 +165,7 @@ export default function App() {
   // Validator name (persists in session)
   const [validatorName, setValidatorName] = useState(() => { try { return sessionStorage.getItem('aipat_validator') || ''; } catch { return ''; } });
   const [showValidatorPrompt, setShowValidatorPrompt] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [tempValidator, setTempValidator] = useState('');
 
   // New audit form
@@ -469,6 +470,42 @@ export default function App() {
     );
   }
 
+ const HelpModal = () => !showHelp ? null : (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 2000, overflow: 'auto' }}>
+      <div style={{ maxWidth: 800, margin: '40px auto', background: WHITE, borderRadius: 16, padding: '40px 36px', position: 'relative', maxHeight: '90vh', overflow: 'auto' }}>
+        <button onClick={() => setShowHelp(false)} style={{ position: 'sticky', top: 0, float: 'right', background: NAVY, color: WHITE, border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontSize: 14, fontWeight: 600, zIndex: 10 }}>✕ Close</button>
+        <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 2, color: GOLD, marginBottom: 8 }}>THE AI INSURANCE GROUP</div>
+        <h1 style={{ fontSize: 28, fontWeight: 700, color: NAVY, marginBottom: 4 }}>AI Policy Audit Tool</h1>
+        <p style={{ fontSize: 14, color: MID_GRAY, marginBottom: 24 }}>Standard Operating Procedure</p>
+        <div style={{ borderTop: `2px solid ${GOLD}`, paddingTop: 24 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: NAVY, marginTop: 24, marginBottom: 8 }}>Overview</h2>
+          <p style={{ fontSize: 14, lineHeight: 1.7, color: '#333', marginBottom: 12 }}>This tool analyzes commercial insurance policies to identify AI-related exclusions, coverage gaps, and endorsements. Claude AI scans every page and produces a structured analysis that you validate before delivering to the client.</p>
+          <p style={{ fontSize: 14, lineHeight: 1.7, color: '#333', marginBottom: 12 }}><strong>Scans for:</strong> Verisk ISO forms (CG 40 47, CG 40 48, CG 35 08), carrier-specific exclusions (W.R. Berkley PC 51380, Cincinnati Financial, Hamilton, Philadelphia, AIG), sublimits, definition changes, silent gaps, and affirmative AI endorsements.</p>
+          <p style={{ fontSize: 14, lineHeight: 1.7, color: '#333', marginBottom: 12 }}><strong>Policy types:</strong> GL, E&O, D&O, Cyber, EPLI, Products/Completed Ops.</p>
+          <p style={{ fontSize: 14, lineHeight: 1.7, color: '#333', marginBottom: 12 }}><strong>Time:</strong> ~10 min AI analysis + ~20 min validation = ~30 min total per audit.</p>
+          <div style={{ background: LIGHT_GOLD, borderLeft: `3px solid ${GOLD}`, padding: '12px 16px', borderRadius: 4, fontSize: 13, color: NAVY, margin: '16px 0', fontStyle: 'italic' }}>Important: The AI generates a draft. You must review every finding. Your professional judgment is the final word.</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: NAVY, marginTop: 32, marginBottom: 12 }}>Step-by-Step Process</h2>
+          {[
+            { n: '1', t: 'Log In', d: 'Go to audit.theaiinsurancegroup.com. Enter the password and click Sign In. Enter your full name when prompted — it is recorded on all actions.' },
+            { n: '2', t: 'Start a New Audit', d: 'Click + New Audit on the Dashboard.' },
+            { n: '3', t: 'Enter Client Information', d: 'Enter client/company name exactly as on policies. Select industry. Optionally add contact name and email.' },
+            { n: '4', t: 'Capture Client Authorization', d: 'Type the client\'s full name (electronic signature), company, and check the authorization box. You MUST have their actual verbal or written authorization first. Timestamped and stored permanently.' },
+            { n: '5', t: 'Upload Policy Documents', d: 'Drag/drop or click to upload PDFs. Tag each file with the correct policy type (GL, E&O, D&O, Cyber, EPLI, Products). Every file must be tagged. Request full policies, not just dec pages.' },
+            { n: '6', t: 'Run AI Analysis', d: 'Click "Run AI Coverage Audit." Each policy takes 1–2 minutes. Do not close the browser tab.' },
+            { n: '7', t: 'Review Draft Report', d: 'Report opens in DRAFT status (yellow banner). Statuses: ⛔ AI EXCLUDED = confirmed gap. ⚠️ SILENT = ambiguous gap. 🔶 PARTIAL = limited. ✅ COVERED = affirmative.' },
+            { n: '8', t: 'Validate Findings', d: '✓ Confirm = accurate. ✗ Reject = wrong/false positive. ✏ Modify = partially correct (add a note). Read each finding before validating.' },
+            { n: '9', t: 'Validate Coverage Gaps', d: '✓ Confirm = real gap. ✗ Reject = not applicable to this client.' },
+            { n: '10', t: 'Finalize Audit', d: 'Once all items reviewed, click green "Finalize Audit" button. Status changes to VALIDATED with your name and timestamp.' },
+            { n: '11', t: 'Print / Save as PDF', d: 'Click "Print / Save as PDF." Select Save as PDF in your browser. This is your client deliverable.' },
+            { n: '12', t: 'Present to Client', d: 'Walk through the report: overall risk → policy-by-policy findings → gaps → recommendations → next steps for placing coverage.' },
+          ].map((step) => (
+            <div key={step.n} style={{ display: 'flex', gap: 14, marginBottom: 16 }}>
+              <div style={{ width: 32, height: 32, borderRadius: '50%', background: NAVY, color: WHITE, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 14, flexShrink: 0 }}>{step.n}</div>
+              <div><div style={{ fontSize: 15, fontWeight: 700, color: NAVY, marginBottom: 4 }}>{step.t}</div><div style={{ fontSize: 14, lineHeight: 1.6, color: '#333' }}>{step.d}</div></div>
+            </div>
+          ))}
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: NAVY, marginTop: 32, marginBottom: 12 }}>Compliance Rules</h2>
+          {['Never deliver a DRAFT report to a client.', 'Never fabricate client consent.', 'Never present AI analysis as a coverage determination.', 'Validate every finding — do not bulk-confirm withou
   // =============== RENDER: VALIDATOR PROMPT MODAL ===============
   const ValidatorModal = () => showValidatorPrompt ? (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
@@ -490,6 +527,8 @@ export default function App() {
     <div style={S.header} className="no-print">
       <div><div style={S.logoText}>AI POLICY AUDIT TOOL</div><div style={S.logoSub}>THE AI INSURANCE GROUP</div></div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+       <HelpModal />
+        <button onClick={() => setShowHelp(true)} style={{ background: 'transparent', color: GOLD, border: '1px solid #B8972A', borderRadius: 6, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>📖 How To Use</button>
         {validatorName && <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>Validator: {validatorName}</span>}
         {extra}
         {onBack && <button style={{ ...S.btnOutline, color: WHITE, borderColor: 'rgba(255,255,255,0.3)', fontSize: 13 }} onClick={onBack}>{backLabel || '← Back'}</button>}
