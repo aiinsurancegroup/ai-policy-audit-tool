@@ -384,7 +384,7 @@ export default function App() {
   const Hdr = ({ right }) => (
     <div style={S.header} className="no-print">
       <div><div style={{ color: GOLD, fontSize: 18, fontWeight: 700, letterSpacing: 1.2 }}>AI POLICY AUDIT TOOL</div>
-      <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, letterSpacing: 2, marginTop: 2 }}>THE AI INSURANCE GROUP</div></div>
+     <a href="https://theaiinsurancegroup.com" style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, letterSpacing: 2, marginTop: 2, textDecoration: 'none', display: 'block' }}>THE AI INSURANCE GROUP ↗</a></div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <HelpModal />
         <button onClick={() => setShowHelp(true)} style={{ background: 'transparent', color: GOLD, border: '1px solid ' + GOLD, borderRadius: 6, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>📖 How To Use</button>
