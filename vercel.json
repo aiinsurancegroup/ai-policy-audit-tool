@@ -5,9 +5,6 @@
   "functions": {
     "api/analyze.js": {
       "maxDuration": 120
-    },
-    "api/export.js": {
-      "maxDuration": 30
     }
   }
 }
