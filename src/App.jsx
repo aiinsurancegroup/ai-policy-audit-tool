@@ -707,7 +707,42 @@ export default function App() {
         </div>
 
         {error && <div style={{ padding: 14, background: '#FEF2F2', borderRadius: 8, color: RED, fontSize: 14, marginBottom: 20 }}>{error}</div>}
-
+{/* Document Status Summary */}
+        <div style={S.card}>
+          <div style={S.sec}>📋 Document Review Status</div>
+          {curPolicies.map((pol, i) => {
+            const raw2 = pol.ai_raw_output || {};
+            const typeInfo2 = POLICY_TYPES.find(p => p.id === pol.policy_type);
+            const isValid = raw2.ai_status && raw2.ai_status !== 'UNKNOWN' && raw2.ai_status !== 'ERROR' && raw2.ai_status !== 'PENDING' && !raw2.error;
+            return (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 8, marginBottom: 8, background: isValid ? '#F0FDF4' : '#FEF2F2', border: '1px solid ' + (isValid ? GREEN : RED) }}>
+                <span style={{ fontSize: 20 }}>{isValid ? '✅' : '❌'}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: NAVY }}>{typeInfo2?.label || pol.policy_type}</div>
+                  <div style={{ fontSize: 12, color: MID_GRAY }}>{pol.file_name}</div>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: isValid ? GREEN : RED }}>
+                  {isValid ? (raw2.ai_status === 'EXCLUDED' ? 'Valid — AI Exclusion Found' : raw2.ai_status === 'SILENT' ? 'Valid — Silent on AI' : raw2.ai_status === 'PARTIAL' ? 'Valid — Partial Coverage' : raw2.ai_status === 'AFFIRMATIVE' ? 'Valid — AI Covered' : 'Valid Policy') : 'Invalid — Not a Commercial Policy'}
+                </div>
+              </div>
+            );
+          })}
+          {(() => {
+            const uploaded = curPolicies.map(p => p.policy_type);
+            const missing = POLICY_TYPES.filter(pt => !uploaded.includes(pt.id));
+            return missing.length > 0 ? (
+              <div style={{ marginTop: 16, padding: 16, background: '#FFFBEB', borderRadius: 8, border: '1px solid ' + ORANGE }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: ORANGE, marginBottom: 8 }}>📎 Missing Policy Types</div>
+                <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6 }}>The following were not included. Consider requesting them for a complete analysis:</div>
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {missing.map(m => <span key={m.id} style={{ padding: '4px 12px', background: '#FEF3C7', borderRadius: 20, fontSize: 12, fontWeight: 600, color: ORANGE }}>{m.icon} {m.label}</span>)}
+                </div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 16, padding: 12, background: '#F0FDF4', borderRadius: 8, border: '1px solid ' + GREEN, fontSize: 13, color: GREEN, fontWeight: 600 }}>✅ All 6 policy types included — comprehensive audit</div>
+            );
+          })()}
+        </div>
         {curPolicies.map((pol, pi) => {
           const ti = POLICY_TYPES.find(p => p.id === pol.policy_type);
           const out = isDraft ? pol.ai_raw_output : (pol.validated_output || pol.ai_raw_output);
