@@ -63,7 +63,7 @@ const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'sho
 const fmtDateTime = (iso) => new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 const logActivity = async (auditId, action, details, performedBy = 'system') => {
-  try { await supabase.from('activity_log').insert({ audit_id: auditId, action, details, performed_by: performedBy }); } catch (e) { console.error('Log error:', e); }
+  try { await supabase.from('activity_log').insert({ audit_id: auditId, action, details, actor: performedBy }); } catch (e) { console.error('Log error:', e); }
 };
 
 const fileToBase64 = (file) => new Promise((res, rej) => {
@@ -76,6 +76,154 @@ const calcRisk = (statuses) => {
   if (statuses.every(s => s === 'AFFIRMATIVE')) return 'LOW';
   return 'MODERATE';
 };
+
+// ============ CLIENT PORTAL (public, no auth) ============
+function ClientPortal({ token }) {
+  const [audit, setAudit] = useState(null);
+  const [loadingAudit, setLoadingAudit] = useState(true);
+  const [signerName, setSignerName] = useState('');
+  const [signerTitle, setSignerTitle] = useState('');
+  const [consentOk, setConsentOk] = useState(false);
+  const [files, setFiles] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState('');
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('audits').select('*').eq('client_token', token).single();
+      if (data) {
+        if (data.client_submitted_at) setDone(true);
+        setAudit(data);
+      }
+      setLoadingAudit(false);
+    })();
+  }, [token]);
+
+  const handleFiles = (fileList) => {
+    const pdfs = Array.from(fileList).filter(f => f.name.endsWith('.pdf'));
+    setFiles(prev => [...prev, ...pdfs.map(f => ({ id: Math.random().toString(36).substr(2, 9), name: f.name, size: f.size, file: f, pt: '' }))]);
+  };
+
+  const submit = async () => {
+    if (!signerName || !consentOk || files.length === 0) return;
+    if (files.some(f => !f.pt)) { setError('Please tag each file with a policy type.'); return; }
+    setSubmitting(true); setError('');
+
+    try {
+      // Record consent
+      await supabase.from('audits').update({
+        consent_name: signerName, consent_company: audit.client_name,
+        consent_statement: CONSENT_TEXT, consent_timestamp: new Date().toISOString(),
+        client_submitted_at: new Date().toISOString(), file_count: files.length,
+        notes: signerTitle ? 'Signer title: ' + signerTitle : null,
+      }).eq('id', audit.id);
+
+      // Upload files to storage and create policy records
+      for (const f of files) {
+        const path = `${audit.id}/${f.id}_${f.name}`;
+        const { error: upErr } = await supabase.storage.from('policies').upload(path, f.file);
+        if (upErr) console.error('Upload error:', upErr);
+
+        const lbl = POLICY_TYPES.find(p => p.id === f.pt)?.label || f.pt;
+        await supabase.from('audit_policies').insert({
+          audit_id: audit.id, policy_type: f.pt, file_name: f.name,
+          file_size_bytes: f.size, storage_path: path, ai_status: 'PENDING',
+          ai_raw_output: {}, validation_status: 'PENDING',
+        });
+      }
+
+      await logActivity(audit.id, 'CLIENT_SUBMITTED', { signer: signerName, files: files.length }, signerName);
+      setDone(true);
+    } catch (e) { setError('Submission failed: ' + e.message); }
+    setSubmitting(false);
+  };
+
+  const cS = {
+    wrap: { minHeight: '100vh', background: `linear-gradient(135deg, ${DARK_BG} 0%, ${NAVY} 50%, #1e3a5f 100%)`, padding: '40px 20px' },
+    box: { maxWidth: 700, margin: '0 auto', background: WHITE, borderRadius: 16, padding: '40px 36px', boxShadow: '0 24px 80px rgba(0,0,0,0.3)' },
+  };
+
+  if (loadingAudit) return <div style={cS.wrap}><div style={{ ...cS.box, textAlign: 'center' }}><div style={{ fontSize: 18, color: NAVY }}>Loading...</div></div></div>;
+  if (!audit) return <div style={cS.wrap}><div style={{ ...cS.box, textAlign: 'center' }}><div style={{ fontSize: 20, fontWeight: 700, color: RED, marginBottom: 8 }}>Invalid Link</div><div style={{ fontSize: 14, color: MID_GRAY }}>This audit link is invalid or has expired. Please contact The AI Insurance Group.</div></div></div>;
+
+  if (done) return (
+    <div style={cS.wrap}><div style={{ ...cS.box, textAlign: 'center' }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
+      <div style={{ fontSize: 24, fontWeight: 700, color: NAVY, marginBottom: 8 }}>Documents Received</div>
+      <div style={{ fontSize: 14, color: MID_GRAY, lineHeight: 1.7, maxWidth: 450, margin: '0 auto' }}>
+        Thank you. Your authorization and policy documents have been securely received. The AI Insurance Group will review your policies for AI-related coverage gaps and contact you with the results.
+      </div>
+      <div style={{ marginTop: 24, fontSize: 13, color: GOLD, fontWeight: 600 }}>THE AI INSURANCE GROUP</div>
+    </div></div>
+  );
+
+  return (
+    <div style={cS.wrap}>
+      <div style={{ textAlign: 'center', marginBottom: 24 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 2, color: GOLD }}>THE AI INSURANCE GROUP</div>
+        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginTop: 4 }}>Secure Document Portal</div>
+      </div>
+      <div style={cS.box}>
+        <div style={{ fontSize: 22, fontWeight: 700, color: NAVY, marginBottom: 4 }}>AI Coverage Audit</div>
+        <div style={{ fontSize: 14, color: MID_GRAY, marginBottom: 8 }}>for <strong>{audit.client_name}</strong></div>
+        <div style={{ fontSize: 13, color: MID_GRAY, marginBottom: 24, lineHeight: 1.6 }}>
+          Please review and sign the authorization below, then upload your commercial insurance policy documents. Your documents are encrypted and stored securely.
+        </div>
+
+        {error && <div style={{ padding: 14, background: '#FEF2F2', borderRadius: 8, color: RED, fontSize: 14, marginBottom: 20 }}>{error}</div>}
+
+        <div style={{ border: '1px solid ' + GOLD, borderRadius: 12, padding: 24, marginBottom: 24 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase', color: GOLD, marginBottom: 12 }}>Authorization</div>
+          <div style={{ background: '#F9FAFB', borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 13, lineHeight: 1.7, maxHeight: 150, overflowY: 'auto' }}>{CONSENT_TEXT}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+            <div><label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Your Full Name (Electronic Signature) *</label>
+              <input style={{ width: '100%', padding: '12px 16px', border: '1px solid ' + LIGHT_GRAY, borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box' }} value={signerName} onChange={e => setSignerName(e.target.value)} placeholder="Type your full name" /></div>
+            <div><label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Title</label>
+              <input style={{ width: '100%', padding: '12px 16px', border: '1px solid ' + LIGHT_GRAY, borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box' }} value={signerTitle} onChange={e => setSignerTitle(e.target.value)} placeholder="e.g. CFO, General Counsel" /></div>
+          </div>
+          <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer', fontSize: 14 }}>
+            <input type="checkbox" checked={consentOk} onChange={e => setConsentOk(e.target.checked)} style={{ marginTop: 3, width: 18, height: 18 }} />
+            <span>I have read and agree to the above authorization.</span>
+          </label>
+        </div>
+
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase', color: GOLD, marginBottom: 12 }}>Upload Policy Documents</div>
+          <div style={{ fontSize: 13, color: MID_GRAY, marginBottom: 12 }}>Upload your commercial insurance policies as PDF files. Include as many as you have: General Liability, E&O, D&O, Cyber, EPLI, Products Liability.</div>
+          <div style={{ border: '2px dashed ' + LIGHT_GRAY, borderRadius: 12, padding: 32, textAlign: 'center', cursor: 'pointer', background: '#FAFAFA' }}
+            onClick={() => fileRef.current?.click()}
+            onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = GOLD; }}
+            onDragLeave={e => { e.preventDefault(); e.currentTarget.style.borderColor = LIGHT_GRAY; }}
+            onDrop={e => { e.preventDefault(); e.currentTarget.style.borderColor = LIGHT_GRAY; handleFiles(e.dataTransfer.files); }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Drop PDFs here or click to browse</div>
+            <input ref={fileRef} type="file" accept=".pdf" multiple style={{ display: 'none' }} onChange={e => handleFiles(e.target.files)} />
+          </div>
+          {files.length > 0 && <div style={{ marginTop: 16 }}>
+            {files.map(f => (
+              <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', background: '#FAFAFA', borderRadius: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                <span>📄</span>
+                <div style={{ flex: 1, minWidth: 120 }}><div style={{ fontSize: 14, fontWeight: 600 }}>{f.name}</div><div style={{ fontSize: 11, color: MID_GRAY }}>{(f.size / 1024).toFixed(0)} KB</div></div>
+                <select style={{ padding: '8px 12px', border: '1px solid ' + (f.pt ? GREEN : ORANGE), borderRadius: 8, fontSize: 13, background: WHITE }} value={f.pt} onChange={e => setFiles(prev => prev.map(x => x.id === f.id ? { ...x, pt: e.target.value } : x))}>
+                  <option value="">Select policy type...</option>{POLICY_TYPES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </select>
+                <button style={{ background: 'none', border: 'none', color: RED, cursor: 'pointer', fontSize: 18 }} onClick={() => setFiles(prev => prev.filter(x => x.id !== f.id))}>×</button>
+              </div>
+            ))}
+          </div>}
+        </div>
+
+        <button onClick={submit} disabled={!signerName || !consentOk || files.length === 0 || submitting}
+          style={{ width: '100%', background: GOLD, color: WHITE, border: 'none', borderRadius: 8, padding: '14px 28px', fontSize: 16, fontWeight: 600, cursor: 'pointer', opacity: (!signerName || !consentOk || files.length === 0 || submitting) ? 0.4 : 1 }}>
+          {submitting ? 'Uploading...' : '🔒 Submit Authorization & Documents'}
+        </button>
+        <div style={{ textAlign: 'center', marginTop: 16, fontSize: 11, color: MID_GRAY }}>Your documents are encrypted and stored securely. © 2026 The AI Insurance Group.</div>
+      </div>
+    </div>
+  );
+}
 
 const S = {
   app: { fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: LIGHT_BG, minHeight: '100vh', color: NAVY },
@@ -104,6 +252,11 @@ const S = {
 };
 
 export default function App() {
+  // Check for client portal token in URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const clientToken = urlParams.get('token');
+  if (clientToken) return <ClientPortal token={clientToken} />;
+
   const [authed, setAuthed] = useState(() => { try { return localStorage.getItem('aipat2') === 'true'; } catch { return false; } });
   const [pw, setPw] = useState('');
   const [authErr, setAuthErr] = useState('');
@@ -131,11 +284,12 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false);
   const [fActions, setFActions] = useState({});
   const [fNotes, setFNotes] = useState({});
+  const [clientLink, setClientLink] = useState('');
 
   useEffect(() => { if (authed) loadAudits(); }, [authed]);
 
   const loadAudits = async () => {
-    const { data } = await supabase.from('audits').select('*').is('deleted_at', null).order('created_at', { ascending: false });
+    const { data } = await supabase.from('audits').select('*').eq('is_deleted', false).order('created_at', { ascending: false });
     setAudits(data || []);
   };
 
@@ -287,9 +441,79 @@ export default function App() {
 
   const softDel = async (id) => {
     if (!window.confirm('Archive this audit? Hidden but preserved for compliance.')) return;
-    await supabase.from('audits').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+    await supabase.from('audits').update({ is_deleted: true }).eq('id', id);
     await logActivity(id, 'AUDIT_ARCHIVED', {}, 'operator');
     await loadAudits();
+  };
+
+  const sendToClient = async () => {
+    if (!clientName || !clientInd) return;
+    setError('');
+    const token = genId() + genId() + genId();
+    const { data: audit, error: err } = await supabase.from('audits').insert({
+      client_name: clientName, client_industry: clientInd, client_contact: clientContact,
+      client_email: clientEmail, status: 'DRAFT', file_count: 0, client_token: token,
+    }).select().single();
+    if (err || !audit) { setError('Failed to create audit: ' + (err?.message || '')); return; }
+    await logActivity(audit.id, 'CLIENT_LINK_CREATED', { client: clientName }, 'operator');
+    const link = window.location.origin + '?token=' + token;
+    setClientLink(link);
+    await loadAudits();
+    setClientName(''); setClientInd(''); setClientContact(''); setClientEmail('');
+  };
+
+  const runAuditFromStorage = async (audit) => {
+    const pols = await loadPolicies(audit.id);
+    if (!pols.length) { setError('No documents uploaded by client yet.'); return; }
+    setLoading(true); setScreen('analyzing');
+    setCurAudit(audit);
+
+    const statuses = [];
+    for (let i = 0; i < pols.length; i++) {
+      const pol = pols[i];
+      if (pol.ai_status !== 'PENDING') { statuses.push(pol.ai_status); continue; }
+      const lbl = POLICY_TYPES.find(p => p.id === pol.policy_type)?.label || pol.policy_type;
+      setProgress({ c: i + 1, t: pols.length, l: lbl });
+      setLoadMsg('Analyzing ' + lbl + '...');
+
+      let result;
+      try {
+        const { data: fileData } = await supabase.storage.from('policies').download(pol.storage_path);
+        if (!fileData) throw new Error('Could not download file');
+        const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(fileData); });
+        const resp = await fetch('/api/analyze', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
+            { type: 'text', text: 'Analyze this ' + lbl + ' policy for ' + audit.client_name + ' (Industry: ' + audit.client_industry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
+          ] }] }),
+        });
+        if (!resp.ok) throw new Error('API error ' + resp.status);
+        const data = await resp.json();
+        const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
+        result = JSON.parse(txt.replace(/```json|```/g, '').trim());
+      } catch (e) { result = { error: e.message, ai_status: 'ERROR' }; }
+
+      statuses.push(result.ai_status || 'UNKNOWN');
+      await supabase.from('audit_policies').update({
+        ai_status: result.ai_status || 'UNKNOWN', risk_level: result.risk_level || null,
+        ai_raw_output: result, summary: result.summary || null, carrier: result.carrier || null,
+        policy_number: result.policy_number || null,
+      }).eq('id', pol.id);
+      await logActivity(audit.id, 'POLICY_ANALYZED', { type: lbl, file: pol.file_name, status: result.ai_status }, 'system');
+    }
+
+    const risk = calcRisk(statuses);
+    await supabase.from('audits').update({ overall_risk: risk, file_count: pols.length }).eq('id', audit.id);
+    audit.overall_risk = risk; audit.file_count = pols.length;
+
+    await loadAudits();
+    const updatedPols = await loadPolicies(audit.id);
+    setCurAudit(audit); setCurPolicies(updatedPols);
+    setLoading(false); setScreen('report');
+    const a = {};
+    updatedPols.forEach((p, pi) => (p.ai_raw_output?.findings || []).forEach((_, fi) => { a[pi + '-' + fi] = ''; }));
+    setFActions(a); setFNotes({}); setValName('');
   };
 
   const exportBackup = async () => {
@@ -384,7 +608,7 @@ export default function App() {
   const Hdr = ({ right }) => (
     <div style={S.header} className="no-print">
       <div><div style={{ color: GOLD, fontSize: 18, fontWeight: 700, letterSpacing: 1.2 }}>AI POLICY AUDIT TOOL</div>
-     <a href="https://theaiinsurancegroup.com" style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, letterSpacing: 2, marginTop: 2, textDecoration: 'none', display: 'block' }}>THE AI INSURANCE GROUP ↗</a></div>
+      <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, letterSpacing: 2, marginTop: 2 }}>THE AI INSURANCE GROUP</div></div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <HelpModal />
         <button onClick={() => setShowHelp(true)} style={{ background: 'transparent', color: GOLD, border: '1px solid ' + GOLD, borderRadius: 6, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>📖 How To Use</button>
@@ -427,7 +651,7 @@ export default function App() {
                 <div style={{ fontSize: 11, color: MID_GRAY, minWidth: 140, flexShrink: 0 }}>{fmtDateTime(log.created_at)}</div>
                 <div style={{ flex: 1 }}>
                   <span style={{ ...S.tag, marginRight: 8 }}>{log.action}</span>
-                  <span style={{ fontSize: 13, color: MID_GRAY }}>by {log.performed_by}</span>
+                  <span style={{ fontSize: 13, color: MID_GRAY }}>by {log.actor}</span>
                   {log.details && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4 }}>{JSON.stringify(log.details)}</div>}
                 </div>
               </div>
@@ -589,11 +813,54 @@ export default function App() {
   if (screen === 'new-audit') {
     const ready = clientName && clientInd && files.length > 0 && !files.some(f => !f.pt) && consentOk && signerName;
     return (<div style={S.app}>
-      <Hdr right={<button style={S.btnOut} onClick={() => setScreen('dashboard')}>← Cancel</button>} />
+      <Hdr right={<button style={S.btnOut} onClick={() => { setScreen('dashboard'); setClientLink(''); setError(''); }}>← Cancel</button>} />
       <div style={S.content}>
         <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>New Coverage Audit</div>
-        <div style={{ fontSize: 14, color: MID_GRAY, marginBottom: 32 }}>Upload client policy documents for AI coverage gap analysis</div>
+        <div style={{ fontSize: 14, color: MID_GRAY, marginBottom: 32 }}>Choose how to collect the client's documents</div>
         {error && <div style={{ padding: 14, background: '#FEF2F2', borderRadius: 8, color: RED, fontSize: 14, marginBottom: 20 }}>{error}</div>}
+
+        {/* OPTION 1: Send Link to Client */}
+        <div style={{ ...S.card, border: '2px solid ' + GOLD }}>
+          <div style={S.sec}>📨 Option 1: Send Link to Client (Recommended)</div>
+          <div style={{ fontSize: 14, color: MID_GRAY, marginBottom: 16, lineHeight: 1.6 }}>
+            Enter the client's info below, generate a secure link, and text or email it to them. They sign the authorization and upload their own policies — no back and forth.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+            <div><label style={S.label}>Company Name *</label><input style={S.input} value={clientName} onChange={e => setClientName(e.target.value)} placeholder="e.g. Smith & Associates LLP" /></div>
+            <div><label style={S.label}>Industry *</label><select style={S.select} value={clientInd} onChange={e => setClientInd(e.target.value)}><option value="">Select...</option>{INDUSTRIES.map(ind => <option key={ind} value={ind}>{ind}</option>)}</select></div>
+            <div><label style={S.label}>Contact Name</label><input style={S.input} value={clientContact} onChange={e => setClientContact(e.target.value)} placeholder="Primary contact" /></div>
+            <div><label style={S.label}>Contact Email</label><input style={S.input} value={clientEmail} onChange={e => setClientEmail(e.target.value)} placeholder="email@company.com" /></div>
+          </div>
+          <button style={{ ...S.btn, opacity: (clientName && clientInd) ? 1 : 0.4 }} onClick={sendToClient} disabled={!clientName || !clientInd}>
+            🔗 Generate Client Link
+          </button>
+
+          {clientLink && (
+            <div style={{ marginTop: 16, padding: 16, background: '#DCFCE7', borderRadius: 8, border: '1px solid ' + GREEN }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: GREEN, marginBottom: 8 }}>✅ Link Generated — Send to Client</div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input style={{ ...S.input, flex: 1, fontFamily: 'monospace', fontSize: 13 }} value={clientLink} readOnly onClick={e => e.target.select()} />
+                <button style={S.btnSm} onClick={() => { navigator.clipboard.writeText(clientLink); }}>📋 Copy</button>
+              </div>
+              <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 8 }}>Text or email this link. The client signs authorization and uploads their policies directly. You'll see it on your dashboard when they submit.</div>
+            </div>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '12px 0' }}>
+          <div style={{ flex: 1, height: 1, background: LIGHT_GRAY }} />
+          <div style={{ fontSize: 13, color: MID_GRAY, fontWeight: 600 }}>OR</div>
+          <div style={{ flex: 1, height: 1, background: LIGHT_GRAY }} />
+        </div>
+
+        {/* OPTION 2: Upload Yourself */}
+        <div style={S.card}>
+          <div style={S.sec}>📄 Option 2: Upload Yourself</div>
+          <div style={{ fontSize: 14, color: MID_GRAY, marginBottom: 16, lineHeight: 1.6 }}>
+            If you already have the client's policies and authorization, upload them directly and run the analysis now.
+          </div>
+        </div>
 
         <div style={S.card}>
           <div style={S.sec}>Client Information</div>
@@ -616,7 +883,7 @@ export default function App() {
             <input type="checkbox" checked={consentOk} onChange={e => setConsentOk(e.target.checked)} style={{ marginTop: 3 }} />
             <span>Client has reviewed and agreed to the above authorization. <strong>By checking this box, you confirm the client has provided verbal or written consent.</strong></span>
           </label>
-          <div style={{ fontSize: 11, color: MID_GRAY, marginTop: 8 }}>Consent is timestamped and stored in the compliance database. For DocuSign, send separately and check this box once signed.</div>
+          <div style={{ fontSize: 11, color: MID_GRAY, marginTop: 8 }}>Consent is timestamped and stored in the compliance database.</div>
         </div>
 
         <div style={S.card}>
@@ -668,11 +935,12 @@ export default function App() {
       <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>Audit Dashboard</div>
       <div style={{ fontSize: 14, color: MID_GRAY, marginBottom: 32 }}>Manage client AI coverage audits</div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 28 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 28 }}>
         <div style={{ ...S.card, ...S.stat }}><div style={S.statN}>{audits.length}</div><div style={S.statL}>Total Audits</div></div>
+        <div style={{ ...S.card, ...S.stat }}><div style={{ ...S.statN, color: '#7C3AED' }}>{audits.filter(a => a.client_token && !a.client_submitted_at && !a.overall_risk).length}</div><div style={S.statL}>Awaiting Client</div></div>
         <div style={{ ...S.card, ...S.stat }}><div style={{ ...S.statN, color: RED }}>{audits.filter(a => a.overall_risk === 'HIGH').length}</div><div style={S.statL}>High Risk</div></div>
         <div style={{ ...S.card, ...S.stat }}><div style={{ ...S.statN, color: GREEN }}>{audits.filter(a => a.status === 'VALIDATED').length}</div><div style={S.statL}>Validated</div></div>
-        <div style={{ ...S.card, ...S.stat }}><div style={{ ...S.statN, color: ORANGE }}>{audits.filter(a => a.status === 'DRAFT').length}</div><div style={S.statL}>Pending</div></div>
+        <div style={{ ...S.card, ...S.stat }}><div style={{ ...S.statN, color: ORANGE }}>{audits.filter(a => a.status === 'DRAFT' && a.overall_risk).length}</div><div style={S.statL}>Pending Review</div></div>
       </div>
 
       {audits.length === 0 ? (
@@ -685,24 +953,29 @@ export default function App() {
       ) : (
         <div>
           <div style={S.sec}>All Audits</div>
-          {audits.map(audit => (
-            <div key={audit.id} style={{ ...S.card, cursor: 'pointer' }} onClick={() => openAudit(audit)}>
+          {audits.map(audit => {
+            const awaitingClient = audit.client_token && !audit.client_submitted_at && !audit.overall_risk;
+            const clientSubmitted = audit.client_submitted_at && !audit.overall_risk;
+            return (
+            <div key={audit.id} style={{ ...S.card, cursor: 'pointer', border: clientSubmitted ? '2px solid ' + GREEN : 'none' }} onClick={() => { if (!awaitingClient && !clientSubmitted) openAudit(audit); }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
                 <div>
                   <div style={{ fontSize: 17, fontWeight: 700 }}>{audit.client_name}</div>
                   <div style={{ fontSize: 13, color: MID_GRAY, marginTop: 4 }}>
-                    {audit.client_industry} • {audit.file_count} policies • {fmtDate(audit.created_at)}
+                    {audit.client_industry} • {audit.file_count || 0} policies • {fmtDate(audit.created_at)}
                     {audit.validated_by && <span> • Validated by {audit.validated_by}</span>}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={S.stBadge(audit.status)}>{audit.status}</span>
-                  <span style={S.badge(audit.overall_risk)}>{audit.overall_risk} RISK</span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {awaitingClient && <span style={{ ...S.stBadge('DRAFT'), background: '#EDE9FE', color: '#7C3AED' }}>⏳ Awaiting Client</span>}
+                  {clientSubmitted && <button style={S.btnGreen} onClick={e => { e.stopPropagation(); runAuditFromStorage(audit); }}>🔍 Run Analysis</button>}
+                  {!awaitingClient && !clientSubmitted && <span style={S.stBadge(audit.status)}>{audit.status}</span>}
+                  {audit.overall_risk && <span style={S.badge(audit.overall_risk)}>{audit.overall_risk} RISK</span>}
                   <button style={S.btnRed} onClick={e => { e.stopPropagation(); softDel(audit.id); }}>Archive</button>
                 </div>
               </div>
-            </div>
-          ))}
+            </div>);
+          })}
         </div>
       )}
 
@@ -710,10 +983,10 @@ export default function App() {
         <div style={S.sec}>How It Works</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20 }}>
           {[
-            { s: '1', t: 'Client Consent', d: 'Record authorization before uploading documents.' },
-            { s: '2', t: 'Upload Policies', d: 'Upload GL, E&O, D&O, Cyber, EPLI, Products PDFs.' },
-            { s: '3', t: 'AI Analysis', d: 'Claude scans for AI exclusions, form numbers, and gaps.' },
-            { s: '4', t: 'Validate', d: 'Review findings, confirm or modify, then finalize.' },
+            { s: '1', t: 'Send Link', d: 'Generate a secure link and send to the client.' },
+            { s: '2', t: 'Client Signs & Uploads', d: 'Client signs authorization and uploads their policies.' },
+            { s: '3', t: 'AI Analysis', d: 'You click Run Analysis — Claude scans for AI exclusions and gaps.' },
+            { s: '4', t: 'Validate & Deliver', d: 'Review findings, validate, finalize, and present to client.' },
           ].map((x, i) => (
             <div key={i} style={{ textAlign: 'center' }}>
               <div style={{ width: 36, height: 36, borderRadius: '50%', background: LIGHT_GOLD, color: GOLD, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, margin: '0 auto 10px' }}>{x.s}</div>
