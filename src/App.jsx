@@ -289,7 +289,7 @@ export default function App() {
   useEffect(() => { if (authed) loadAudits(); }, [authed]);
 
   const loadAudits = async () => {
-    const { data } = await supabase.from('audits').select('*').eq('is_deleted', false).order('created_at', { ascending: false });
+    const { data } = await supabase.from('audits').select('*').eq('.is('deleted_at', null).order('created_at', { ascending: false });
     setAudits(data || []);
   };
 
@@ -441,7 +441,7 @@ export default function App() {
 
   const softDel = async (id) => {
     if (!window.confirm('Archive this audit? Hidden but preserved for compliance.')) return;
-    await supabase.from('audits').update({ is_deleted: true }).eq('id', id);
+    await supabase.from('audits').update({ deleted_at: new Date().toISOString() }).eq('id', id);
     await logActivity(id, 'AUDIT_ARCHIVED', {}, 'operator');
     await loadAudits();
   };
