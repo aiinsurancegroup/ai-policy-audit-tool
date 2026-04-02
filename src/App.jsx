@@ -24,7 +24,6 @@ const INDUSTRIES = [
     'Hospitality / Food Service', 'Transportation / Logistics',
     'Nonprofit', 'Education', 'Other',
   ];
-];
 
 const CONSENT_TEXT = 'I authorize The AI Insurance Group to review and analyze the commercial insurance policy documents provided herein for the purpose of identifying AI-related coverage gaps, exclusions, and endorsements. I understand that this analysis is for informational purposes only and does not constitute a coverage determination, legal advice, or binding coverage opinion. Final coverage interpretations should be confirmed with the issuing carrier(s). I confirm that I am authorized to share these policy documents for review purposes.';
 
