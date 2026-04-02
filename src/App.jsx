@@ -15,6 +15,10 @@ const POLICY_TYPES = [
   { id: 'cyber', label: 'Cyber Liability', icon: '🔒' },
   { id: 'epli', label: 'Employment Practices (EPLI)', icon: '👥' },
   { id: 'products', label: 'Products / Completed Ops', icon: '📦' },
+  { id: 'wc', label: 'Workers Compensation', icon: '⚠️' },
+    { id: 'auto_policy', label: 'Commercial Auto', icon: '🚗' },
+    { id: 'property', label: 'Property / BOP', icon: '🏢' },
+    { id: 'umbrella', label: 'Umbrella / Excess', icon: '☂️' },
 ];
 const INDUSTRIES = [
     'Financial Services / Wealth Management', 'Healthcare / Medical', 'Legal / Law Firm',
