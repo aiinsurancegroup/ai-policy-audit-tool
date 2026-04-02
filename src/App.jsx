@@ -375,7 +375,7 @@ export default function App() {
   const rmFile = (id) => setFiles(prev => prev.filter(f => f.id !== id));
 
   const runAudit = async () => {
-    if (!clientName || !clientInd || !files.length || !consentOk || !signerName) return;
+   if (!clientName || !clientInd || !files.length) return;
     if (files.some(f => !f.pt)) { setError('Tag all files with a policy type.'); return; }
     setError(''); setLoading(true); setScreen('analyzing');
 
