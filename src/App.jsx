@@ -846,7 +846,7 @@ export default function App() {
 
   // ============ NEW AUDIT ============
   if (screen === 'new-audit') {
-    const ready = clientName && clientInd && files.length > 0 && !files.some(f => !f.pt) && consentOk && signerName;
+    const ready = clientName && clientInd && files.length > 0 && !files.some(f => !f.pt);
     return (<div style={S.app}>
       <Hdr right={<button style={S.btnOut} onClick={() => { setScreen('dashboard'); setClientLink(''); setError(''); }}>← Cancel</button>} />
       <div style={S.content}>
@@ -907,19 +907,6 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ ...S.card, border: '1px solid ' + (consentOk ? GREEN : ORANGE) }}>
-          <div style={S.sec}>Client Authorization {consentOk ? '✅' : '(Required)'}</div>
-          <div style={{ background: '#F9FAFB', borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 13, lineHeight: 1.7, maxHeight: 150, overflowY: 'auto' }}>{CONSENT_TEXT}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-            <div><label style={S.label}>Client Signer Name *</label><input style={S.input} value={signerName} onChange={e => setSignerName(e.target.value)} placeholder="Person authorizing" /></div>
-            <div><label style={S.label}>Title</label><input style={S.input} value={signerTitle} onChange={e => setSignerTitle(e.target.value)} placeholder="e.g. CFO, General Counsel" /></div>
-          </div>
-          <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', cursor: 'pointer', fontSize: 14 }}>
-            <input type="checkbox" checked={consentOk} onChange={e => setConsentOk(e.target.checked)} style={{ marginTop: 3 }} />
-            <span>Client has reviewed and agreed to the above authorization. <strong>By checking this box, you confirm the client has provided verbal or written consent.</strong></span>
-          </label>
-          <div style={{ fontSize: 11, color: MID_GRAY, marginTop: 8 }}>Consent is timestamped and stored in the compliance database.</div>
-        </div>
 
         <div style={S.card}>
           <div style={S.sec}>Policy Documents</div>
@@ -950,7 +937,7 @@ export default function App() {
           <div style={{ fontSize: 13, color: MID_GRAY }}>
             {files.length} {files.length === 1 ? 'policy' : 'policies'}
             {files.some(f => !f.pt) && <span style={{ color: ORANGE }}> • untagged</span>}
-            {!consentOk && <span style={{ color: ORANGE }}> • consent required</span>}
+           
           </div>
           <button style={{ ...S.btn, opacity: ready ? 1 : 0.4, padding: '14px 36px', fontSize: 16 }} onClick={runAudit} disabled={!ready}>🔍 Run AI Coverage Audit</button>
         </div>
