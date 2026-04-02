@@ -24,39 +24,85 @@ const INDUSTRIES = [
 
 const CONSENT_TEXT = 'I authorize The AI Insurance Group to review and analyze the commercial insurance policy documents provided herein for the purpose of identifying AI-related coverage gaps, exclusions, and endorsements. I understand that this analysis is for informational purposes only and does not constitute a coverage determination, legal advice, or binding coverage opinion. Final coverage interpretations should be confirmed with the issuing carrier(s). I confirm that I am authorized to share these policy documents for review purposes.';
 
-const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing in AI-related exclusions, endorsements, and coverage gaps.
+const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing in AI-related exclusions, endorsements, coverage gaps, and general commercial insurance adequacy.
 
-YOUR TASK: Read the entire policy document and identify ALL provisions related to artificial intelligence, machine learning, automated decision-making, algorithms, generative AI, or large language models.
+  YOUR TASK: Read the entire policy document and perform TWO analyses:
 
-FORMS TO FIND:
-- CG 40 47 01 26: Exclusion Generative AI (BI/PD)
-- CG 40 48 01 26: Exclusion Generative AI Coverage B Only
-- CG 35 08 01 26: Exclusion Generative AI (broader)
-- W.R. Berkley PC 51380: Absolute AI exclusion
-- Cincinnati Financial, Hamilton, Philadelphia Insurance, AIG AI exclusions
-- Any carrier-specific AI or technology exclusions
+  PART 1 — AI COVERAGE ANALYSIS:
+  Identify ALL provisions related to artificial intelligence, machine learning, automated decision-making, algorithms, generative AI, or large language models.
 
-LANGUAGE PATTERNS: artificial intelligence, AI, machine learning, automated decision, automated system, algorithm, generative AI, large language model, LLM, neural network, deep learning, chatbot, virtual assistant, computer-generated content, technology services exclusion
+  FORMS TO FIND:
+  - CG 40 47 01 26: Exclusion Generative AI (BI/PD)
+  - CG 40 48 01 26: Exclusion Generative AI Coverage B Only
+  - CG 35 08 01 26: Exclusion Generative AI (broader)
+  - W.R. Berkley PC 51380: Absolute AI exclusion
+  - Cincinnati Financial, Hamilton, Philadelphia Insurance, AIG AI exclusions
+  - Any carrier-specific AI or technology exclusions
 
-FLAG: sublimits on tech claims, modified professional services definitions excluding AI, modified wrongful act definitions, cyber exclusions missing AI, D&O tech governance exclusions, EPLI automated hiring exclusions, products liability software exclusions, policy dates, silent coverage (no AI mention = gap), affirmative AI coverage, retroactive dates.
+  LANGUAGE PATTERNS: artificial intelligence, AI, machine learning, automated decision, automated system, algorithm, generative AI, large language model, LLM, neural network, deep learning, chatbot, virtual assistant, computer-generated content, technology services exclusion
 
-RESPOND ONLY with this JSON:
-{
-  "policy_type": "GL|EO|DO|Cyber|EPLI|Products|Other",
-  "carrier": "carrier name",
-  "policy_number": "if visible",
-  "effective_date": "if visible",
-  "expiration_date": "if visible",
-  "ai_status": "EXCLUDED|SILENT|PARTIAL|AFFIRMATIVE",
-  "risk_level": "HIGH|MODERATE|LOW",
-  "findings": [{"type": "EXCLUSION|SUBLIMIT|DEFINITION_CHANGE|ENDORSEMENT|SILENT_GAP|AFFIRMATIVE", "form_number": "if identified or null", "description": "what was found", "policy_section": "where in policy", "impact": "what this means for AI claims", "verbatim_excerpt": "5-10 word key phrase"}],
-  "coverage_gaps": ["specific gap descriptions"],
-  "recommendations": ["specific recommendations"],
-  "summary": "2-3 sentence executive summary"
-}
+  FLAG: sublimits on tech claims, modified professional services definitions excluding AI, modified wrongful act definitions, cyber exclusions missing AI, D&O tech governance exclusions, EPLI automated hiring exclusions, products liability software exclusions, policy dates, silent coverage (no AI mention = gap)
 
-If not an insurance policy: {"error": "Not an insurance policy", "ai_status": "UNKNOWN"}
-Be thorough. Miss nothing.`;
+  PART 2 — GENERAL COVERAGE REVIEW:
+  Analyze the policy for common coverage adequacy issues unrelated to AI:
+
+  LIMITS ADEQUACY:
+  - Flag GL limits below $1M/$2M occurrence/aggregate
+  - Flag professional liability limits below $1M
+  - Flag cyber liability limits below $1M
+  - Flag umbrella/excess gaps if no umbrella is present
+  - Compare limits against industry standards for the business size and type
+
+  COVERAGE GAPS:
+  - Missing hired/non-owned auto coverage
+  - Missing employment practices liability (EPLI)
+  - Missing cyber liability / data breach coverage
+  - Missing business interruption / business income coverage
+  - Missing waiver of subrogation where commonly required
+  - Missing additional insured endorsements
+  - Inadequate or missing products/completed operations coverage
+  - No personal injury / advertising injury coverage
+  - Missing employee benefits liability
+
+  POLICY STRUCTURE ISSUES:
+  - Claims-made policies without adequate retroactive dates
+  - Sunset clauses or extended reporting period limitations
+  - Unusually high deductibles or self-insured retentions
+  - Restrictive definitions that narrow coverage
+  - Named perils vs. all-risk / special form discrepancies
+  - Outdated classification codes
+  - Coinsurance penalties in property coverage
+  - Gaps between policy periods (lapse exposure)
+
+  PREMIUM INDICATORS:
+  - Multiple carriers where bundling may reduce cost
+  - Outdated endorsements that could be modernized
+  - Missing loss-free credits or experience modifications
+  - Coverage overlaps between policies (paying twice for same risk)
+
+  RESPOND ONLY with this JSON:
+  {
+    "policy_type": "GL|EO|DO|Cyber|EPLI|Products|Other",
+    "carrier": "carrier name",
+    "policy_number": "if visible",
+    "effective_date": "if visible",
+    "expiration_date": "if visible",
+    "ai_status": "EXCLUDED|SILENT|PARTIAL|AFFIRMATIVE",
+    "risk_level": "HIGH|MODERATE|LOW",
+    "findings": [{"type": "EXCLUSION|SUBLIMIT|DEFINITION_CHANGE|ENDORSEMENT|SILENT_GAP|AFFIRMATIVE", "form_number": "if identified or null", "description": "what was found", "policy_section": "where in policy", "impact": "what this means for AI claims", "verbatim_excerpt": "5-10 word key phrase"}],
+    "coverage_gaps": ["specific gap descriptions"],
+    "recommendations": ["specific recommendations"],
+    "general_review": {
+      "limits_assessment": "ADEQUATE|BELOW_STANDARD|REVIEW_NEEDED",
+      "estimated_adequacy": "WELL_COVERED|GAPS_FOUND|UNDER_INSURED|OVER_INSURED",
+      "general_findings": [{"category": "LIMITS|COVERAGE_GAP|STRUCTURE|PREMIUM", "issue": "what was found", "severity": "HIGH|MODERATE|LOW", "recommendation": "what to do about it"}],
+      "general_summary": "2-3 sentence overview of non-AI coverage status"
+    },
+    "summary": "2-3 sentence executive summary covering BOTH AI and general coverage"
+  }
+
+  If not an insurance policy: {"error": "Not an insurance policy", "ai_status": "UNKNOWN"}
+  Be thorough. Miss nothing.`;
 
 const genId = () => Math.random().toString(36).substr(2, 9);
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
