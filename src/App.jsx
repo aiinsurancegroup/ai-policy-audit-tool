@@ -8,6 +8,7 @@ const RED = '#DC2626', GREEN = '#16A34A', ORANGE = '#EA580C';
 const ACCESS_CODE = 'AuditTool2026!';
 
 const POLICY_TYPES = [
+  { id: 'auto', label: 'Auto-Detect (AI will identify)', icon: '🔍' },
   { id: 'gl', label: 'General Liability (CGL)', icon: '🛡️' },
   { id: 'eo', label: 'Errors & Omissions (E&O)', icon: '⚖️' },
   { id: 'do', label: 'Directors & Officers (D&O)', icon: '🏛️' },
@@ -15,11 +16,14 @@ const POLICY_TYPES = [
   { id: 'epli', label: 'Employment Practices (EPLI)', icon: '👥' },
   { id: 'products', label: 'Products / Completed Ops', icon: '📦' },
 ];
-
 const INDUSTRIES = [
-  'Financial Services / Wealth Management', 'Healthcare / Medical', 'Legal / Law Firm',
-  'Technology / SaaS', 'Insurance / Brokerage', 'Manufacturing',
-  'Retail / E-Commerce', 'Real Estate', 'Education', 'Other',
+    'Financial Services / Wealth Management', 'Healthcare / Medical', 'Legal / Law Firm',
+    'Technology / SaaS', 'Media / Entertainment / Streaming', 'Digital Services / Software',
+    'Insurance / Brokerage', 'Manufacturing', 'Professional Services',
+    'Retail / E-Commerce', 'Real Estate', 'Construction',
+    'Hospitality / Food Service', 'Transportation / Logistics',
+    'Nonprofit', 'Education', 'Other',
+  ];
 ];
 
 const CONSENT_TEXT = 'I authorize The AI Insurance Group to review and analyze the commercial insurance policy documents provided herein for the purpose of identifying AI-related coverage gaps, exclusions, and endorsements. I understand that this analysis is for informational purposes only and does not constitute a coverage determination, legal advice, or binding coverage opinion. Final coverage interpretations should be confirmed with the issuing carrier(s). I confirm that I am authorized to share these policy documents for review purposes.';
