@@ -5,7 +5,21 @@ const NAVY = '#1A2B45', GOLD = '#B8972A', DARK_BG = '#0F1923', LIGHT_BG = '#F8F6
 const WHITE = '#FFFFFF', LIGHT_GOLD = '#F5EFE0', MID_GRAY = '#6B7280', LIGHT_GRAY = '#E5E7EB';
 const RED = '#DC2626', GREEN = '#16A34A', ORANGE = '#EA580C';
 
-const ACCESS_CODE = 'AuditTool2026!';
+// All admin operations go through /api/admin/audit with an x-admin-password header.
+// The password and service role key live in Vercel env vars, not in this bundle.
+async function adminApi(password, body) {
+  const r = await fetch('/api/admin/audit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-admin-password': password },
+    body: JSON.stringify(body),
+  });
+  return r;
+}
+async function adminJson(password, body) {
+  const r = await adminApi(password, body);
+  if (!r.ok) return null;
+  try { return await r.json(); } catch { return null; }
+}
 
 const POLICY_TYPES = [
   { id: 'auto', label: 'Auto-Detect (AI will identify)', icon: '🔍' },
@@ -310,9 +324,11 @@ export default function App() {
   const clientToken = urlParams.get('token');
   if (clientToken) return <ClientPortal token={clientToken} />;
 
-  const [authed, setAuthed] = useState(() => { try { return localStorage.getItem('aipat2') === 'true'; } catch { return false; } });
+  const [authed, setAuthed] = useState(false);
+  const [adminPw, setAdminPw] = useState('');
   const [pw, setPw] = useState('');
   const [authErr, setAuthErr] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
   const [screen, setScreen] = useState('dashboard');
   const [audits, setAudits] = useState([]);
   const [curAudit, setCurAudit] = useState(null);
@@ -342,21 +358,31 @@ export default function App() {
   useEffect(() => { if (authed) loadAudits(); }, [authed]);
 
   const loadAudits = async () => {
-    const { data } = await supabase.from('audits').select('*').is('deleted_at', null).order('created_at', { ascending: false });
-    setAudits(data || []);
+    const data = await adminJson(adminPw, { action: 'select', table: 'audits', filter: { deleted_at: null }, order: 'created_at.desc' });
+    setAudits(Array.isArray(data) ? data : []);
   };
 
   const loadPolicies = async (id) => {
-    const { data } = await supabase.from('audit_policies').select('*').eq('audit_id', id).order('created_at');
-    return data || [];
+    const data = await adminJson(adminPw, { action: 'select', table: 'audit_policies', filter: { audit_id: id }, order: 'created_at' });
+    return Array.isArray(data) ? data : [];
   };
 
-  const login = () => {
-    if (pw === ACCESS_CODE) { setAuthed(true); setAuthErr(''); try { localStorage.setItem('aipat2', 'true'); } catch {} }
-    else setAuthErr('Incorrect password');
+  const login = async () => {
+    if (!pw || loggingIn) return;
+    setLoggingIn(true);
+    setAuthErr('');
+    try {
+      const r = await adminApi(pw, { action: 'verify' });
+      if (r.ok) { setAdminPw(pw); setAuthed(true); setPw(''); }
+      else if (r.status === 401) setAuthErr('Incorrect password');
+      else setAuthErr('Could not reach server. Try again.');
+    } catch (e) {
+      setAuthErr('Network error: ' + e.message);
+    }
+    setLoggingIn(false);
   };
 
-  const logout = () => { setAuthed(false); try { localStorage.setItem('aipat2', 'false'); } catch {} };
+  const logout = () => { setAuthed(false); setAdminPw(''); };
 
   const openAudit = async (audit) => {
     const pols = await loadPolicies(audit.id);
@@ -383,17 +409,19 @@ export default function App() {
     if (files.some(f => !f.pt)) { setError('Tag all files with a policy type.'); return; }
     setError(''); setLoading(true); setScreen('analyzing');
 
-    const { data: audit, error: err } = await supabase.from('audits').insert({
+    const auditResp = await adminApi(adminPw, { action: 'insert', table: 'audits', returnRow: true, payload: {
       client_name: clientName, client_industry: clientInd, client_contact: clientContact,
       client_email: clientEmail, status: 'DRAFT', file_count: files.length, created_by: 'operator',
-    }).select().single();
+    }});
+    if (!auditResp.ok) { setError('Failed to create audit.'); setLoading(false); setScreen('new-audit'); return; }
+    const auditRows = await auditResp.json().catch(() => null);
+    const audit = Array.isArray(auditRows) ? auditRows[0] : auditRows;
+    if (!audit || !audit.id) { setError('Failed to create audit.'); setLoading(false); setScreen('new-audit'); return; }
 
-    if (err || !audit) { setError('Failed to create audit.'); setLoading(false); setScreen('new-audit'); return; }
-
-    await supabase.from('client_consents').insert({
+    await adminApi(adminPw, { action: 'insert', table: 'client_consents', payload: {
       audit_id: audit.id, client_name: signerName, client_title: signerTitle,
       client_company: clientName, client_email: clientEmail, consent_text: CONSENT_TEXT, signed_name: signerName,
-    });
+    }});
     await logActivity(audit.id, 'AUDIT_CREATED', { client: clientName, files: files.length }, 'operator');
     await logActivity(audit.id, 'CONSENT_SIGNED', { signer: signerName }, signerName);
 
@@ -421,18 +449,18 @@ export default function App() {
       } catch (e) { result = { error: e.message, ai_status: 'ERROR' }; }
 
       statuses.push(result.ai_status || 'UNKNOWN');
-      await supabase.from('audit_policies').insert({
+      await adminApi(adminPw, { action: 'insert', table: 'audit_policies', payload: {
         audit_id: audit.id, policy_type: f.pt, file_name: f.name, file_size_bytes: f.size,
         carrier: result.carrier || null, policy_number: result.policy_number || null,
         effective_date: result.effective_date || null, expiration_date: result.expiration_date || null,
         ai_status: result.ai_status || 'UNKNOWN', risk_level: result.risk_level || null,
         ai_raw_output: result, summary: result.summary || null, validation_status: 'PENDING',
-      });
+      }});
       await logActivity(audit.id, 'POLICY_ANALYZED', { type: lbl, file: f.name, status: result.ai_status, findings: result.findings?.length || 0 }, 'system');
     }
 
     const risk = calcRisk(statuses);
-    await supabase.from('audits').update({ overall_risk: risk }).eq('id', audit.id);
+    await adminApi(adminPw, { action: 'update', table: 'audits', filter: { id: audit.id }, payload: { overall_risk: risk } });
     audit.overall_risk = risk;
 
     await loadAudits();
@@ -468,22 +496,22 @@ export default function App() {
 
       for (let fi = 0; fi < findings.length; fi++) {
         const k = pi + '-' + fi, act = fActions[k], note = fNotes[k] || '';
-        await supabase.from('finding_validations').insert({
+        await adminApi(adminPw, { action: 'insert', table: 'finding_validations', payload: {
           policy_id: pol.id, finding_index: fi, action: act,
           original_finding: findings[fi], modified_finding: act === 'MODIFIED' ? { ...findings[fi], _note: note } : null,
           validator_name: valName, notes: note,
-        });
+        }});
         if (act !== 'REJECTED') validated.push(act === 'MODIFIED' ? { ...findings[fi], _validator_note: note } : findings[fi]);
         await logActivity(curAudit.id, 'FINDING_' + act, { type: pol.policy_type, idx: fi, desc: findings[fi].description }, valName);
       }
 
-      await supabase.from('audit_policies').update({
+      await adminApi(adminPw, { action: 'update', table: 'audit_policies', filter: { id: pol.id }, payload: {
         validated_output: { ...raw, findings: validated }, validation_status: 'VALIDATED',
         validated_by: valName, validated_at: now,
-      }).eq('id', pol.id);
+      }});
     }
 
-    await supabase.from('audits').update({ status: 'VALIDATED', validated_by: valName, validated_at: now }).eq('id', curAudit.id);
+    await adminApi(adminPw, { action: 'update', table: 'audits', filter: { id: curAudit.id }, payload: { status: 'VALIDATED', validated_by: valName, validated_at: now } });
     await logActivity(curAudit.id, 'REPORT_VALIDATED', { validator: valName, policies: curPolicies.length }, valName);
 
     await loadAudits();
@@ -494,7 +522,7 @@ export default function App() {
 
   const softDel = async (id) => {
     if (!window.confirm('Archive this audit? Hidden but preserved for compliance.')) return;
-    await supabase.from('audits').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+    await adminApi(adminPw, { action: 'soft_delete_audit', id });
     await logActivity(id, 'AUDIT_ARCHIVED', {}, 'operator');
     await loadAudits();
   };
@@ -503,11 +531,14 @@ export default function App() {
     if (!clientName || !clientInd) return;
     setError('');
     const token = genId() + genId() + genId();
-    const { data: audit, error: err } = await supabase.from('audits').insert({
+    const resp = await adminApi(adminPw, { action: 'insert', table: 'audits', returnRow: true, payload: {
       client_name: clientName, client_industry: clientInd, client_contact: clientContact,
       client_email: clientEmail, status: 'DRAFT', file_count: 0, client_token: token,
-    }).select().single();
-    if (err || !audit) { setError('Failed to create audit: ' + (err?.message || '')); return; }
+    }});
+    if (!resp.ok) { setError('Failed to create audit.'); return; }
+    const rows = await resp.json().catch(() => null);
+    const audit = Array.isArray(rows) ? rows[0] : rows;
+    if (!audit || !audit.id) { setError('Failed to create audit.'); return; }
     await logActivity(audit.id, 'CLIENT_LINK_CREATED', { client: clientName }, 'operator');
     const link = window.location.origin + '?token=' + token;
     setClientLink(link);
@@ -531,9 +562,11 @@ export default function App() {
 
       let result;
       try {
-        const { data: fileData } = await supabase.storage.from('policies').download(pol.storage_path);
-        if (!fileData) throw new Error('Could not download file');
-        const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(fileData); });
+        const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
+        if (!dl.ok) throw new Error('Could not download file');
+        const dlJson = await dl.json();
+        const b64 = dlJson.base64;
+        if (!b64) throw new Error('Could not download file');
         const resp = await fetch('/api/analyze', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
@@ -548,16 +581,16 @@ export default function App() {
       } catch (e) { result = { error: e.message, ai_status: 'ERROR' }; }
 
       statuses.push(result.ai_status || 'UNKNOWN');
-      await supabase.from('audit_policies').update({
+      await adminApi(adminPw, { action: 'update', table: 'audit_policies', filter: { id: pol.id }, payload: {
         ai_status: result.ai_status || 'UNKNOWN', risk_level: result.risk_level || null,
         ai_raw_output: result, summary: result.summary || null, carrier: result.carrier || null,
         policy_number: result.policy_number || null,
-      }).eq('id', pol.id);
+      }});
       await logActivity(audit.id, 'POLICY_ANALYZED', { type: lbl, file: pol.file_name, status: result.ai_status }, 'system');
     }
 
     const risk = calcRisk(statuses);
-    await supabase.from('audits').update({ overall_risk: risk, file_count: pols.length }).eq('id', audit.id);
+    await adminApi(adminPw, { action: 'update', table: 'audits', filter: { id: audit.id }, payload: { overall_risk: risk, file_count: pols.length } });
     audit.overall_risk = risk; audit.file_count = pols.length;
 
     await loadAudits();
@@ -582,11 +615,10 @@ export default function App() {
   };
 
   const loadLog = async (auditId) => {
-    const q = auditId
-      ? supabase.from('activity_log').select('*').eq('audit_id', auditId).order('created_at', { ascending: false }).limit(100)
-      : supabase.from('activity_log').select('*').order('created_at', { ascending: false }).limit(200);
-    const { data } = await q;
-    setActLog(data || []);
+    const filter = auditId ? { audit_id: auditId } : {};
+    const limit = auditId ? 100 : 200;
+    const data = await adminJson(adminPw, { action: 'select', table: 'activity_log', filter, order: 'created_at.desc', limit });
+    setActLog(Array.isArray(data) ? data : []);
   };
 
   // ============ LOGIN ============
@@ -600,10 +632,10 @@ export default function App() {
         </div>
         <div style={{ marginBottom: 20 }}>
           <label style={S.label}>Password</label>
-          <input type="password" style={S.input} value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && login()} placeholder="Enter access password" />
+          <input type="password" style={S.input} value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && login()} placeholder="Enter access password" disabled={loggingIn} />
           {authErr && <div style={{ color: RED, fontSize: 13, marginTop: 8 }}>{authErr}</div>}
         </div>
-        <button style={{ ...S.btn, width: '100%' }} onClick={login}>Sign In</button>
+        <button style={{ ...S.btn, width: '100%', opacity: loggingIn ? 0.6 : 1 }} onClick={login} disabled={loggingIn}>{loggingIn ? 'Signing in…' : 'Sign In'}</button>
         <div style={{ textAlign: 'center', marginTop: 24, fontSize: 11, color: MID_GRAY }}>Authorized personnel only. All activity is logged.</div>
       </div>
     </div>
