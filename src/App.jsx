@@ -101,6 +101,19 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
   - Missing loss-free credits or experience modifications
   - Coverage overlaps between policies (paying twice for same risk)
 
+  PART 3 — AGENT OPPORTUNITY ANALYSIS (INTERNAL — NEVER SHOWN TO THE CLIENT):
+  This section is for the producing agent's eyes only and will NEVER appear in any client-facing report. Identify sales angles, cross-sell opportunities, and credible reasons for the agent to initiate a follow-up call.
+
+  LOOK FOR:
+  - Premium inefficiencies the agent could solve (overlaps, outdated endorsements, missing credits, over-insurance)
+  - Coverage lines NOT currently in place that this business clearly needs (e.g., no EPLI for a 50+ employee company, no Cyber for a tech firm, no Professional Liability for an advisory firm, no AI-specific endorsement for an AI-using firm)
+  - Limits well above or below industry norms for this business type and size
+  - Multi-carrier setups that could be consolidated to a single carrier for better terms
+  - Renewal timing that creates a natural conversation window (effective dates within 90-120 days)
+  - Any structural issue that gives the agent a credible, value-add reason to call — not a sales pitch
+
+  GOAL: Generate a specific lead hook the producing agent can use to open a conversation. Be concrete. Avoid generic "consider reviewing your coverage" language. The agent should walk away knowing exactly WHY to call and WHAT to discuss.
+
   RESPOND ONLY with this JSON:
   {
     "policy_type": "GL|EO|DO|Cyber|EPLI|Products|Other",
@@ -119,7 +132,15 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
       "general_findings": [{"category": "LIMITS|COVERAGE_GAP|STRUCTURE|PREMIUM", "issue": "what was found", "severity": "HIGH|MODERATE|LOW", "recommendation": "what to do about it"}],
       "general_summary": "2-3 sentence overview of non-AI coverage status"
     },
-    "summary": "2-3 sentence executive summary covering BOTH AI and general coverage"
+    "summary": "2-3 sentence executive summary covering BOTH AI and general coverage",
+    "agent_opportunities": {
+      "lead_hook": "single sentence the agent can use to open a follow-up call",
+      "primary_opportunity": "the single strongest sales angle from this policy",
+      "estimated_premium_impact": "rough range like '8-12% premium savings' or '$X-Y annual reduction' if calculable; otherwise null",
+      "talking_points": ["3-5 specific points the agent should bring up on the call"],
+      "new_lines_to_write": ["coverage lines this business clearly needs that aren't currently in place"],
+      "urgency_factors": ["what makes this time-sensitive: renewal dates, regulatory changes, recent industry exposure events"]
+    }
   }
 
   If not an insurance policy: {"error": "Not an insurance policy", "ai_status": "UNKNOWN"}
@@ -888,6 +909,59 @@ export default function App() {
               <div style={S.sec}>Recommendations</div>
               {recs.map((r, i) => <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, fontSize: 14, lineHeight: 1.5 }}><span style={{ color: GREEN }}>→</span><span>{r}</span></div>)}
             </div>}
+
+            {out.agent_opportunities && (
+              <div className="no-print" style={{
+                marginTop: 20, padding: 16, background: '#FEF2F2', border: '2px solid ' + RED, borderRadius: 10,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, paddingBottom: 10, borderBottom: '1px solid #FECACA' }}>
+                  <span style={{ fontSize: 16 }}>🔒</span>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: RED, letterSpacing: 1.2, textTransform: 'uppercase' }}>Agent Notes — Internal — Not Shared with Client</span>
+                </div>
+                {out.agent_opportunities.lead_hook && (
+                  <div style={{ marginBottom: 12, padding: 12, background: WHITE, borderRadius: 6, borderLeft: '3px solid ' + RED }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Lead Hook</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: NAVY, fontStyle: 'italic' }}>"{out.agent_opportunities.lead_hook}"</div>
+                  </div>
+                )}
+                {out.agent_opportunities.primary_opportunity && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Primary Opportunity</div>
+                    <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{out.agent_opportunities.primary_opportunity}</div>
+                  </div>
+                )}
+                {out.agent_opportunities.estimated_premium_impact && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Estimated Premium Impact</div>
+                    <div style={{ fontSize: 13, color: GREEN, fontWeight: 600 }}>{out.agent_opportunities.estimated_premium_impact}</div>
+                  </div>
+                )}
+                {out.agent_opportunities.talking_points && out.agent_opportunities.talking_points.length > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Talking Points</div>
+                    {out.agent_opportunities.talking_points.map((tp, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 13, lineHeight: 1.5 }}><span style={{ color: RED }}>•</span><span>{tp}</span></div>
+                    ))}
+                  </div>
+                )}
+                {out.agent_opportunities.new_lines_to_write && out.agent_opportunities.new_lines_to_write.length > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>New Lines to Write</div>
+                    {out.agent_opportunities.new_lines_to_write.map((nl, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 13, lineHeight: 1.5 }}><span style={{ color: GREEN }}>+</span><span>{nl}</span></div>
+                    ))}
+                  </div>
+                )}
+                {out.agent_opportunities.urgency_factors && out.agent_opportunities.urgency_factors.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Urgency</div>
+                    {out.agent_opportunities.urgency_factors.map((uf, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 13, lineHeight: 1.5 }}><span style={{ color: ORANGE }}>⏱</span><span>{uf}</span></div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>);
         })}
 
