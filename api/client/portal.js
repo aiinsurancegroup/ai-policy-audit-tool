@@ -149,6 +149,16 @@ function isTransient(status, headers, text) {
 async function sbRequest(url, init, serviceKey, retries = 0) {
   const started = Date.now();
   const method = init?.method || "GET";
+
+  // Without this, a caller that forgets the serviceKey argument stringifies it
+  // into the header as the literal "undefined", and Supabase answers 401
+  // "Invalid API key" -- which reads as a credential problem rather than the
+  // caller-side mistake it actually is. Fail loudly and locally instead.
+  if (!serviceKey) {
+    console.error(`sbRequest: no service key supplied for ${method} ${url}`);
+    return { ok: false, transient: false, status: 0 };
+  }
+
   let last = { ok: false, transient: true, status: 0 };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -429,7 +439,8 @@ export default async function handler(req, res) {
             // signer's title is recorded in the CLIENT_SUBMITTED activity_log
             // entry below instead.
           }),
-        }
+        },
+        serviceKey
       );
       if (!patchRes.ok) {
         if (patchRes.transient) return res.status(UNAVAILABLE.status).json(UNAVAILABLE.body);
