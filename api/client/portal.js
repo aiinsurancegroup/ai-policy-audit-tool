@@ -107,8 +107,96 @@ function sbHeaders(serviceKey, extra) {
   };
 }
 
+// --- Upstream request handling -------------------------------------------
+//
+// Supabase's REST gateway fails transiently: observed 500, 502, and 401 with
+// sb-error-code INTERNAL_ERROR on identical requests seconds apart, with
+// PostgREST logging "Warp server error: Thread killed by timeout manager".
+// Treating those as "no such token" would tell a client with a perfectly good
+// link that it is invalid, so transient failures are separated from a genuine
+// no-match and surfaced as "temporarily unavailable" instead.
+//
+// Per-attempt timeouts and the total budget keep the worst case (~19s) inside
+// the function's execution limit; a healthy lookup returns on the first try.
+
+const SB_ATTEMPT_TIMEOUT_MS = 6000;
+const SB_TOTAL_BUDGET_MS = 20000;
+const SB_BACKOFF_MS = [250, 600];
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A failure we expect to succeed on a retry, as opposed to one that says
+// something real about the request.
+function isTransient(status, headers, text) {
+  if (status >= 500) return true;
+  if (status === 429) return true;
+  // The gateway reports its own internal faults as 401. A genuine credential
+  // problem is also a 401, so the error code is what separates them: without
+  // it, a bad service key would be retried pointlessly and then reported as a
+  // temporary outage.
+  if (status === 401) {
+    const code = headers?.get?.("sb-error-code") || "";
+    return code === "INTERNAL_ERROR" || text.includes("INTERNAL_ERROR");
+  }
+  return false;
+}
+
+// Returns { ok: true, text } | { ok: false, transient, status }.
+//
+// `retries` defaults to 0. Only idempotent calls opt in: retrying a write
+// whose response was merely lost would double-insert, and retrying the
+// guarded consent PATCH would report a successful submission as a conflict.
+async function sbRequest(url, init, serviceKey, retries = 0) {
+  const started = Date.now();
+  const method = init?.method || "GET";
+  let last = { ok: false, transient: true, status: 0 };
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      const delay = SB_BACKOFF_MS[attempt - 1] ?? SB_BACKOFF_MS[SB_BACKOFF_MS.length - 1];
+      // Don't start an attempt that cannot finish inside the budget.
+      if (Date.now() - started + delay + SB_ATTEMPT_TIMEOUT_MS > SB_TOTAL_BUDGET_MS) break;
+      await sleep(delay);
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SB_ATTEMPT_TIMEOUT_MS);
+    try {
+      const r = await fetch(url, {
+        ...init,
+        headers: sbHeaders(serviceKey, init?.headers),
+        signal: controller.signal,
+      });
+      const text = await r.text();
+      if (r.ok) return { ok: true, status: r.status, text };
+
+      const transient = isTransient(r.status, r.headers, text);
+      last = { ok: false, transient, status: r.status };
+      console.error(
+        `supabase ${method} ${r.status}${transient ? " (transient)" : ""}: ${text.slice(0, 200)}`
+      );
+      if (!transient) return last; // a real error: retrying will not help
+    } catch (e) {
+      // Aborted attempt or network-level failure: always worth another try.
+      last = { ok: false, transient: true, status: 0 };
+      console.error(
+        `supabase ${method} failed:`,
+        e?.name === "AbortError" ? `timeout after ${SB_ATTEMPT_TIMEOUT_MS}ms` : String(e)
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return last;
+}
+
 // Resolve a client_token to its audit row. This is the ONLY place a token is
 // exchanged for an identity; every route goes through it.
+//
+// Returns { audit } | { error: "not_found" | "unavailable" | "upstream" }.
+// The caller must keep "not_found" indistinguishable from a malformed token,
+// but "unavailable" is a different thing entirely and must not be reported as
+// a bad link.
 async function resolveAudit(token, serviceKey) {
   const url =
     `${SUPABASE_URL}/rest/v1/audits` +
@@ -116,34 +204,46 @@ async function resolveAudit(token, serviceKey) {
     `&deleted_at=is.null` +
     `&select=id,client_name,client_submitted_at,client_email` +
     `&limit=1`;
-  const r = await fetch(url, { headers: sbHeaders(serviceKey) });
-  if (!r.ok) return null;
-  const rows = await r.json().catch(() => null);
-  return Array.isArray(rows) && rows.length ? rows[0] : null;
+
+  const res = await sbRequest(url, { method: "GET" }, serviceKey, 2);
+  if (!res.ok) return { error: res.transient ? "unavailable" : "upstream" };
+
+  let rows = null;
+  try {
+    rows = JSON.parse(res.text);
+  } catch {
+    console.error("audits lookup returned unparseable body");
+    return { error: "unavailable" };
+  }
+  if (!Array.isArray(rows) || rows.length === 0) return { error: "not_found" };
+  return { audit: rows[0] };
 }
 
 // Server-side activity logging. Note the column is performed_by — the browser
 // code was writing `actor`, which PostgREST rejected, which is why activity_log
 // has been empty. Failures here are logged but never fail the caller's request.
 async function logActivity(serviceKey, auditId, action, details, performedBy) {
-  try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/activity_log`, {
+  const res = await sbRequest(
+    `${SUPABASE_URL}/rest/v1/activity_log`,
+    {
       method: "POST",
-      headers: sbHeaders(serviceKey),
       body: JSON.stringify({
         audit_id: auditId,
         action,
         details,
         performed_by: performedBy || "client",
       }),
-    });
-    if (!r.ok) console.error("activity_log insert failed:", r.status, await r.text());
-  } catch (e) {
-    console.error("activity_log insert threw:", e);
-  }
+    },
+    serviceKey
+  );
+  if (!res.ok) console.error("activity_log insert failed:", res.status);
 }
 
 const INVALID = { status: 404, body: { error: "Invalid or expired link" } };
+const UNAVAILABLE = {
+  status: 503,
+  body: { error: "Service temporarily unavailable. Please try again in a moment." },
+};
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -172,8 +272,21 @@ export default async function handler(req, res) {
   }
 
   try {
-    const audit = await resolveAudit(token, serviceKey);
-    if (!audit) return res.status(INVALID.status).json(INVALID.body);
+    const resolved = await resolveAudit(token, serviceKey);
+    if (resolved.error === "unavailable") {
+      // The link may well be fine -- we could not reach the database to find
+      // out. Saying "invalid link" here would send a real client away.
+      return res.status(UNAVAILABLE.status).json(UNAVAILABLE.body);
+    }
+    if (resolved.error === "upstream") {
+      return res.status(500).json({ error: "Server error. Please try again." });
+    }
+    // Genuine no-match: same response as a malformed token, so this endpoint
+    // still cannot be used to test whether a given token exists.
+    if (resolved.error === "not_found") {
+      return res.status(INVALID.status).json(INVALID.body);
+    }
+    const audit = resolved.audit;
 
     // ---- lookup -----------------------------------------------------------
     // Returns only what the portal renders, plus the consent text it must
@@ -211,15 +324,24 @@ export default async function handler(req, res) {
       }
 
       const path = `${audit.id}/${randomSegment()}_${fileName}`;
-      const signResp = await fetch(
+      // Retried: minting a signed URL creates no persistent state, so a second
+      // attempt is harmless if the first is lost to a gateway fault.
+      const signRes = await sbRequest(
         `${SUPABASE_URL}/storage/v1/object/upload/sign/${BUCKET}/${path}`,
-        { method: "POST", headers: sbHeaders(serviceKey), body: JSON.stringify({}) }
+        { method: "POST", body: JSON.stringify({}) },
+        serviceKey,
+        2
       );
-      if (!signResp.ok) {
-        console.error("sign upload failed:", signResp.status, await signResp.text());
+      if (!signRes.ok) {
+        if (signRes.transient) return res.status(UNAVAILABLE.status).json(UNAVAILABLE.body);
         return res.status(502).json({ error: "Could not prepare upload. Please try again." });
       }
-      const signed = await signResp.json().catch(() => null);
+      let signed = null;
+      try {
+        signed = JSON.parse(signRes.text);
+      } catch {
+        signed = null;
+      }
       // Supabase returns { url: "/object/upload/sign/<bucket>/<path>?token=<jwt>" }
       if (!signed?.url) {
         console.error("sign upload returned no url");
@@ -285,12 +407,16 @@ export default async function handler(req, res) {
 
       const now = new Date().toISOString();
 
-      const patchResp = await fetch(
+      // Not retried: the is.null guard means a retry after a lost-but-applied
+      // PATCH would match zero rows and report a successful submission as a
+      // conflict. A transient failure here is surfaced as "try again" instead,
+      // which is safe because nothing has been written yet.
+      const patchRes = await sbRequest(
         `${SUPABASE_URL}/rest/v1/audits?id=eq.${encodeURIComponent(audit.id)}` +
           `&client_submitted_at=is.null`, // optimistic lock: loses a double-submit race
         {
           method: "PATCH",
-          headers: sbHeaders(serviceKey, { Prefer: "return=representation" }),
+          headers: { Prefer: "return=representation" },
           body: JSON.stringify({
             consent_name: signerName,
             consent_company: audit.client_name, // from the row, not the client
@@ -305,25 +431,32 @@ export default async function handler(req, res) {
           }),
         }
       );
-      if (!patchResp.ok) {
-        console.error("consent patch failed:", patchResp.status, await patchResp.text());
+      if (!patchRes.ok) {
+        if (patchRes.transient) return res.status(UNAVAILABLE.status).json(UNAVAILABLE.body);
         return res.status(502).json({ error: "Submission failed. Please try again." });
       }
-      const patched = await patchResp.json().catch(() => null);
+      let patched = null;
+      try {
+        patched = JSON.parse(patchRes.text);
+      } catch {
+        patched = null;
+      }
       if (Array.isArray(patched) && patched.length === 0) {
         // Another request submitted this audit between resolve and patch.
         return res.status(409).json({ error: "This audit has already been submitted." });
       }
 
-      const insertResp = await fetch(`${SUPABASE_URL}/rest/v1/audit_policies`, {
-        method: "POST",
-        headers: sbHeaders(serviceKey),
-        body: JSON.stringify(rows),
-      });
-      if (!insertResp.ok) {
+      // Not retried: a lost-but-applied insert would duplicate policy rows.
+      const insertRes = await sbRequest(
+        `${SUPABASE_URL}/rest/v1/audit_policies`,
+        { method: "POST", body: JSON.stringify(rows) },
+        serviceKey
+      );
+      if (!insertRes.ok) {
         // Consent is already recorded at this point. Surface the failure rather
-        // than reporting success for documents that were never attached.
-        console.error("policy insert failed:", insertResp.status, await insertResp.text());
+        // than reporting success for documents that were never attached. This
+        // stays a hard error even when transient: the audit is now marked
+        // submitted, so "try again" would hit the already-submitted guard.
         await logActivity(
           serviceKey, audit.id, "CLIENT_SUBMIT_PARTIAL",
           { signer: signerName, files: rows.length, stage: "audit_policies_insert" },
