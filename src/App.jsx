@@ -166,8 +166,25 @@ const calcRisk = (statuses) => {
 };
 
 // ============ CLIENT PORTAL (public, no auth) ============
+// Talks only to /api/client/portal. The one remaining direct Supabase call is
+// an upload to a server-issued signed URL, which authorizes via the signed
+// token rather than the anon key's storage policy, so it keeps working once
+// the anon grants are revoked.
+async function portalApi(body) {
+  const r = await fetch('/api/client/portal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await r.json(); } catch { /* non-JSON error body */ }
+  if (!r.ok) throw new Error(data?.error || 'Request failed. Please try again.');
+  return data;
+}
+
 function ClientPortal({ token }) {
   const [audit, setAudit] = useState(null);
+  const [consentText, setConsentText] = useState('');
   const [loadingAudit, setLoadingAudit] = useState(true);
   const [signerName, setSignerName] = useState('');
   const [signerTitle, setSignerTitle] = useState('');
@@ -180,10 +197,13 @@ function ClientPortal({ token }) {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from('audits').select('*').eq('client_token', token).single();
-      if (data) {
+      try {
+        const data = await portalApi({ action: 'lookup', token });
         if (data.client_submitted_at) setDone(true);
         setAudit(data);
+        setConsentText(data.consent_statement);
+      } catch {
+        setAudit(null); // renders the existing "Invalid Link" state
       }
       setLoadingAudit(false);
     })();
@@ -200,31 +220,36 @@ function ClientPortal({ token }) {
     setSubmitting(true); setError('');
 
     try {
-      // Record consent
-      await supabase.from('audits').update({
-        consent_name: signerName, consent_company: audit.client_name,
-        consent_statement: CONSENT_TEXT, consent_timestamp: new Date().toISOString(),
-        client_submitted_at: new Date().toISOString(), file_count: files.length,
-        notes: signerTitle ? 'Signer title: ' + signerTitle : null,
-      }).eq('id', audit.id);
-
-      // Upload files to storage and create policy records
+      // 1. One signed URL per file; the bytes go straight to storage and never
+      //    through the function. The server owns the path.
+      const uploaded = [];
       for (const f of files) {
-        const path = `${audit.id}/${f.id}_${f.name}`;
-        const { error: upErr } = await supabase.storage.from('policies').upload(path, f.file);
-        if (upErr) console.error('Upload error:', upErr);
-
-        const lbl = POLICY_TYPES.find(p => p.id === f.pt)?.label || f.pt;
-        await supabase.from('audit_policies').insert({
-          audit_id: audit.id, policy_type: f.pt, file_name: f.name,
-          file_size_bytes: f.size, storage_path: path, ai_status: 'PENDING',
-          ai_raw_output: {}, validation_status: 'PENDING',
+        const { path, upload_token } = await portalApi({
+          action: 'upload_url', token,
+          file_name: f.name, file_size_bytes: f.size,
+        });
+        const { error: upErr } = await supabase.storage
+          .from('policies')
+          .uploadToSignedUrl(path, upload_token, f.file);
+        // Unlike before, an upload failure aborts instead of logging and
+        // continuing: otherwise consent is recorded for a missing document.
+        if (upErr) throw new Error(`Upload failed for ${f.name}. Please try again.`);
+        uploaded.push({
+          policy_type: f.pt, file_name: f.name,
+          file_size_bytes: f.size, storage_path: path,
         });
       }
 
-      await logActivity(audit.id, 'CLIENT_SUBMITTED', { signer: signerName, files: files.length }, signerName);
+      // 2. Consent and document records in one server-side step. The server
+      //    stamps both timestamps and the consent statement.
+      await portalApi({
+        action: 'submit', token,
+        signer_name: signerName, signer_title: signerTitle,
+        files: uploaded,
+      });
+      // CLIENT_SUBMITTED is logged server-side now, with the real IP.
       setDone(true);
-    } catch (e) { setError('Submission failed: ' + e.message); }
+    } catch (e) { setError(e.message || 'Submission failed.'); }
     setSubmitting(false);
   };
 
@@ -264,7 +289,7 @@ function ClientPortal({ token }) {
 
         <div style={{ border: '1px solid ' + GOLD, borderRadius: 12, padding: 24, marginBottom: 24 }}>
           <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase', color: GOLD, marginBottom: 12 }}>Authorization</div>
-          <div style={{ background: '#F9FAFB', borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 13, lineHeight: 1.7, maxHeight: 150, overflowY: 'auto' }}>{CONSENT_TEXT}</div>
+          <div style={{ background: '#F9FAFB', borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 13, lineHeight: 1.7, maxHeight: 150, overflowY: 'auto' }}>{consentText}</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
             <div><label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Your Full Name (Electronic Signature) *</label>
               <input style={{ width: '100%', padding: '12px 16px', border: '1px solid ' + LIGHT_GRAY, borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box' }} value={signerName} onChange={e => setSignerName(e.target.value)} placeholder="Type your full name" /></div>
