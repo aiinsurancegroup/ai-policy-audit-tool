@@ -38,7 +38,7 @@ export default async function handler(req, res) {
             audit_id: audit.id,
             action: 'AUTO_CREATED_FROM_ASSESSMENT',
             details: { name, company, riskLevel, riskScore, email: to },
-            actor: 'system',
+            performed_by: 'system',
           });
         }
       } catch (dbErr) {

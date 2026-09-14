@@ -151,7 +151,7 @@ const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'sho
 const fmtDateTime = (iso) => new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 const logActivity = async (auditId, action, details, performedBy = 'system') => {
-  try { await supabase.from('activity_log').insert({ audit_id: auditId, action, details, actor: performedBy }); } catch (e) { console.error('Log error:', e); }
+  try { await supabase.from('activity_log').insert({ audit_id: auditId, action, details, performed_by: performedBy }); } catch (e) { console.error('Log error:', e); }
 };
 
 const fileToBase64 = (file) => new Promise((res, rej) => {
@@ -757,7 +757,7 @@ export default function App() {
                 <div style={{ fontSize: 11, color: MID_GRAY, minWidth: 140, flexShrink: 0 }}>{fmtDateTime(log.created_at)}</div>
                 <div style={{ flex: 1 }}>
                   <span style={{ ...S.tag, marginRight: 8 }}>{log.action}</span>
-                  <span style={{ fontSize: 13, color: MID_GRAY }}>by {log.actor}</span>
+                  <span style={{ fontSize: 13, color: MID_GRAY }}>by {log.performed_by}</span>
                   {log.details && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4 }}>{JSON.stringify(log.details)}</div>}
                 </div>
               </div>
