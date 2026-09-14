@@ -150,8 +150,28 @@ const genId = () => Math.random().toString(36).substr(2, 9);
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 const fmtDateTime = (iso) => new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 
-const logActivity = async (auditId, action, details, performedBy = 'system') => {
-  try { await supabase.from('activity_log').insert({ audit_id: auditId, action, details, actor: performedBy }); } catch (e) { console.error('Log error:', e); }
+// logActivity lives at module scope but needs to reach React state to raise a
+// visible alarm. App registers a real handler on mount.
+let logFailureSink = () => {};
+
+// Routed through /api/admin/audit so it survives revoking the anon grants.
+// Takes the admin password because module scope cannot see React state.
+const logActivity = async (password, auditId, action, details, performedBy = 'system') => {
+  try {
+    const r = await adminApi(password, {
+      action: 'insert',
+      table: 'activity_log',
+      payload: { audit_id: auditId, action, details, performed_by: performedBy },
+    });
+    if (!r.ok) throw new Error('server returned ' + r.status);
+    return true;
+  } catch (e) {
+    // Do not swallow: this is the compliance trail. The operation itself is
+    // allowed to continue, but the gap must be visible to the operator.
+    console.error('Activity log write failed:', action, e);
+    logFailureSink({ action, reason: String(e?.message || e), at: new Date().toISOString() });
+    return false;
+  }
 };
 
 const fileToBase64 = (file) => new Promise((res, rej) => {
@@ -166,8 +186,25 @@ const calcRisk = (statuses) => {
 };
 
 // ============ CLIENT PORTAL (public, no auth) ============
+// Talks only to /api/client/portal. The one remaining direct Supabase call is
+// an upload to a server-issued signed URL, which authorizes via the signed
+// token rather than the anon key's storage policy, so it keeps working once
+// the anon grants are revoked.
+async function portalApi(body) {
+  const r = await fetch('/api/client/portal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await r.json(); } catch { /* non-JSON error body */ }
+  if (!r.ok) throw new Error(data?.error || 'Request failed. Please try again.');
+  return data;
+}
+
 function ClientPortal({ token }) {
   const [audit, setAudit] = useState(null);
+  const [consentText, setConsentText] = useState('');
   const [loadingAudit, setLoadingAudit] = useState(true);
   const [signerName, setSignerName] = useState('');
   const [signerTitle, setSignerTitle] = useState('');
@@ -180,10 +217,13 @@ function ClientPortal({ token }) {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from('audits').select('*').eq('client_token', token).single();
-      if (data) {
+      try {
+        const data = await portalApi({ action: 'lookup', token });
         if (data.client_submitted_at) setDone(true);
         setAudit(data);
+        setConsentText(data.consent_statement);
+      } catch {
+        setAudit(null); // renders the existing "Invalid Link" state
       }
       setLoadingAudit(false);
     })();
@@ -200,31 +240,36 @@ function ClientPortal({ token }) {
     setSubmitting(true); setError('');
 
     try {
-      // Record consent
-      await supabase.from('audits').update({
-        consent_name: signerName, consent_company: audit.client_name,
-        consent_statement: CONSENT_TEXT, consent_timestamp: new Date().toISOString(),
-        client_submitted_at: new Date().toISOString(), file_count: files.length,
-        notes: signerTitle ? 'Signer title: ' + signerTitle : null,
-      }).eq('id', audit.id);
-
-      // Upload files to storage and create policy records
+      // 1. One signed URL per file; the bytes go straight to storage and never
+      //    through the function. The server owns the path.
+      const uploaded = [];
       for (const f of files) {
-        const path = `${audit.id}/${f.id}_${f.name}`;
-        const { error: upErr } = await supabase.storage.from('policies').upload(path, f.file);
-        if (upErr) console.error('Upload error:', upErr);
-
-        const lbl = POLICY_TYPES.find(p => p.id === f.pt)?.label || f.pt;
-        await supabase.from('audit_policies').insert({
-          audit_id: audit.id, policy_type: f.pt, file_name: f.name,
-          file_size_bytes: f.size, storage_path: path, ai_status: 'PENDING',
-          ai_raw_output: {}, validation_status: 'PENDING',
+        const { path, upload_token } = await portalApi({
+          action: 'upload_url', token,
+          file_name: f.name, file_size_bytes: f.size,
+        });
+        const { error: upErr } = await supabase.storage
+          .from('policies')
+          .uploadToSignedUrl(path, upload_token, f.file);
+        // Unlike before, an upload failure aborts instead of logging and
+        // continuing: otherwise consent is recorded for a missing document.
+        if (upErr) throw new Error(`Upload failed for ${f.name}. Please try again.`);
+        uploaded.push({
+          policy_type: f.pt, file_name: f.name,
+          file_size_bytes: f.size, storage_path: path,
         });
       }
 
-      await logActivity(audit.id, 'CLIENT_SUBMITTED', { signer: signerName, files: files.length }, signerName);
+      // 2. Consent and document records in one server-side step. The server
+      //    stamps both timestamps and the consent statement.
+      await portalApi({
+        action: 'submit', token,
+        signer_name: signerName, signer_title: signerTitle,
+        files: uploaded,
+      });
+      // CLIENT_SUBMITTED is logged server-side now, with the real IP.
       setDone(true);
-    } catch (e) { setError('Submission failed: ' + e.message); }
+    } catch (e) { setError(e.message || 'Submission failed.'); }
     setSubmitting(false);
   };
 
@@ -264,7 +309,7 @@ function ClientPortal({ token }) {
 
         <div style={{ border: '1px solid ' + GOLD, borderRadius: 12, padding: 24, marginBottom: 24 }}>
           <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase', color: GOLD, marginBottom: 12 }}>Authorization</div>
-          <div style={{ background: '#F9FAFB', borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 13, lineHeight: 1.7, maxHeight: 150, overflowY: 'auto' }}>{CONSENT_TEXT}</div>
+          <div style={{ background: '#F9FAFB', borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 13, lineHeight: 1.7, maxHeight: 150, overflowY: 'auto' }}>{consentText}</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
             <div><label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: NAVY, marginBottom: 6 }}>Your Full Name (Electronic Signature) *</label>
               <input style={{ width: '100%', padding: '12px 16px', border: '1px solid ' + LIGHT_GRAY, borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box' }} value={signerName} onChange={e => setSignerName(e.target.value)} placeholder="Type your full name" /></div>
@@ -359,6 +404,13 @@ export default function App() {
   const [progress, setProgress] = useState({ c: 0, t: 0, l: '' });
   const [error, setError] = useState('');
   const [actLog, setActLog] = useState([]);
+  const [logFailures, setLogFailures] = useState([]);
+
+  // A compliance trail that fails quietly is worse than no trail at all.
+  useEffect(() => {
+    logFailureSink = (f) => setLogFailures(prev => [...prev, f]);
+    return () => { logFailureSink = () => {}; };
+  }, []);
 
   const [clientName, setClientName] = useState('');
   const [clientInd, setClientInd] = useState('');
@@ -443,8 +495,8 @@ export default function App() {
       audit_id: audit.id, client_name: signerName, client_title: signerTitle,
       client_company: clientName, client_email: clientEmail, consent_text: CONSENT_TEXT, signed_name: signerName,
     }});
-    await logActivity(audit.id, 'AUDIT_CREATED', { client: clientName, files: files.length }, 'operator');
-    await logActivity(audit.id, 'CONSENT_SIGNED', { signer: signerName }, signerName);
+    await logActivity(adminPw, audit.id, 'AUDIT_CREATED', { client: clientName, files: files.length }, 'operator');
+    await logActivity(adminPw, audit.id, 'CONSENT_SIGNED', { signer: signerName }, signerName);
 
     const statuses = [];
     for (let i = 0; i < files.length; i++) {
@@ -477,7 +529,7 @@ export default function App() {
         ai_status: result.ai_status || 'UNKNOWN', risk_level: result.risk_level || null,
         ai_raw_output: result, summary: result.summary || null, validation_status: 'PENDING',
       }});
-      await logActivity(audit.id, 'POLICY_ANALYZED', { type: lbl, file: f.name, status: result.ai_status, findings: result.findings?.length || 0 }, 'system');
+      await logActivity(adminPw, audit.id, 'POLICY_ANALYZED', { type: lbl, file: f.name, status: result.ai_status, findings: result.findings?.length || 0 }, 'system');
     }
 
     const risk = calcRisk(statuses);
@@ -523,7 +575,7 @@ export default function App() {
           validator_name: valName, notes: note,
         }});
         if (act !== 'REJECTED') validated.push(act === 'MODIFIED' ? { ...findings[fi], _validator_note: note } : findings[fi]);
-        await logActivity(curAudit.id, 'FINDING_' + act, { type: pol.policy_type, idx: fi, desc: findings[fi].description }, valName);
+        await logActivity(adminPw, curAudit.id, 'FINDING_' + act, { type: pol.policy_type, idx: fi, desc: findings[fi].description }, valName);
       }
 
       await adminApi(adminPw, { action: 'update', table: 'audit_policies', filter: { id: pol.id }, payload: {
@@ -533,7 +585,7 @@ export default function App() {
     }
 
     await adminApi(adminPw, { action: 'update', table: 'audits', filter: { id: curAudit.id }, payload: { status: 'VALIDATED', validated_by: valName, validated_at: now } });
-    await logActivity(curAudit.id, 'REPORT_VALIDATED', { validator: valName, policies: curPolicies.length }, valName);
+    await logActivity(adminPw, curAudit.id, 'REPORT_VALIDATED', { validator: valName, policies: curPolicies.length }, valName);
 
     await loadAudits();
     const updated = { ...curAudit, status: 'VALIDATED', validated_by: valName, validated_at: now };
@@ -544,7 +596,7 @@ export default function App() {
   const softDel = async (id) => {
     if (!window.confirm('Archive this audit? Hidden but preserved for compliance.')) return;
     await adminApi(adminPw, { action: 'soft_delete_audit', id });
-    await logActivity(id, 'AUDIT_ARCHIVED', {}, 'operator');
+    await logActivity(adminPw, id, 'AUDIT_ARCHIVED', {}, 'operator');
     await loadAudits();
   };
 
@@ -560,7 +612,7 @@ export default function App() {
     const rows = await resp.json().catch(() => null);
     const audit = Array.isArray(rows) ? rows[0] : rows;
     if (!audit || !audit.id) { setError('Failed to create audit.'); return; }
-    await logActivity(audit.id, 'CLIENT_LINK_CREATED', { client: clientName }, 'operator');
+    await logActivity(adminPw, audit.id, 'CLIENT_LINK_CREATED', { client: clientName }, 'operator');
     const link = window.location.origin + '?token=' + token;
     setClientLink(link);
     await loadAudits();
@@ -607,7 +659,7 @@ export default function App() {
         ai_raw_output: result, summary: result.summary || null, carrier: result.carrier || null,
         policy_number: result.policy_number || null,
       }});
-      await logActivity(audit.id, 'POLICY_ANALYZED', { type: lbl, file: pol.file_name, status: result.ai_status }, 'system');
+      await logActivity(adminPw, audit.id, 'POLICY_ANALYZED', { type: lbl, file: pol.file_name, status: result.ai_status }, 'system');
     }
 
     const risk = calcRisk(statuses);
@@ -712,6 +764,7 @@ export default function App() {
   );
 
   const Hdr = ({ right }) => (
+    <>
     <div style={S.header} className="no-print">
       <div><div style={{ color: GOLD, fontSize: 18, fontWeight: 700, letterSpacing: 1.2 }}>AI POLICY AUDIT TOOL</div>
       <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, letterSpacing: 2, marginTop: 2 }}>THE AI INSURANCE GROUP</div></div>
@@ -721,6 +774,18 @@ export default function App() {
         {right}
       </div>
     </div>
+    {logFailures.length > 0 && (
+      <div className="no-print" style={{ background: '#FEF2F2', borderBottom: '2px solid ' + RED, padding: '12px 28px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: RED }}>
+          ⚠ {logFailures.length} activity-log {logFailures.length === 1 ? 'entry' : 'entries'} failed to record
+        </span>
+        <span style={{ fontSize: 12, color: MID_GRAY }}>
+          {logFailures.slice(-3).map(f => f.action).join(', ')}{logFailures.length > 3 ? ' and earlier' : ''} — the compliance trail is incomplete.
+        </span>
+        <button onClick={() => setLogFailures([])} style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid ' + RED, color: RED, borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer' }}>Dismiss</button>
+      </div>
+    )}
+    </>
   );
 
   // ============ ANALYZING ============
@@ -757,7 +822,7 @@ export default function App() {
                 <div style={{ fontSize: 11, color: MID_GRAY, minWidth: 140, flexShrink: 0 }}>{fmtDateTime(log.created_at)}</div>
                 <div style={{ flex: 1 }}>
                   <span style={{ ...S.tag, marginRight: 8 }}>{log.action}</span>
-                  <span style={{ fontSize: 13, color: MID_GRAY }}>by {log.actor}</span>
+                  <span style={{ fontSize: 13, color: MID_GRAY }}>by {log.performed_by}</span>
                   {log.details && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4 }}>{JSON.stringify(log.details)}</div>}
                 </div>
               </div>
@@ -989,7 +1054,7 @@ export default function App() {
             The AI Insurance Group works with Lloyd's, Munich Re, and specialty AI liability markets to place affirmative coverage.
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }} className="no-print">
-            {!isDraft && <button style={S.btn} onClick={() => { logActivity(a.id, 'REPORT_EXPORTED', {}, valName || 'operator'); window.print(); }}>Print / Save as PDF</button>}
+            {!isDraft && <button style={S.btn} onClick={() => { logActivity(adminPw, a.id, 'REPORT_EXPORTED', {}, valName || 'operator'); window.print(); }}>Print / Save as PDF</button>}
             <button style={S.btnOut} onClick={async () => { await loadLog(a.id); setScreen('activity-log'); }}>Activity Log</button>
           </div>
         </div>

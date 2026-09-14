@@ -10,40 +10,55 @@ export default async function handler(req, res) {
 
   const RESEND_API_KEY = process.env.RESEND_API_KEY;
   const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
-  const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY;
+  // Service role, not anon: this endpoint writes to audits and activity_log,
+  // and the anon key loses those grants under deny-all. Safe here because this
+  // file is a serverless function -- the key never reaches the browser.
+  const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!RESEND_API_KEY) return res.status(500).json({ error: 'Resend API key not configured' });
+  // The entire point of this email is the tokenized portal link. Without the
+  // database we cannot mint one, and an email carrying a tokenless link looks
+  // delivered while silently losing the lead. Refuse to send instead.
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    console.error('send-email: Supabase not configured (VITE_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)');
+    return res.status(500).json({ error: 'Server not configured' });
+  }
 
   try {
     const { to, name, company, riskLevel, riskScore, gaps, industry } = req.body;
     if (!to) return res.status(400).json({ error: 'Missing recipient email' });
 
-    let portalLink = 'https://audit.theaiinsurancegroup.com';
-    if (SUPABASE_URL && SUPABASE_KEY) {
-      try {
-        const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-        const token = Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
-        const { data: audit } = await supabase.from('audits').insert({
-          client_name: company || name || 'Assessment Lead',
-          client_industry: industry || 'Other',
-          client_contact: name || '',
-          client_email: to,
-          status: 'DRAFT',
-          file_count: 0,
-          client_token: token,
-        }).select().single();
-        if (audit) {
-          portalLink = 'https://audit.theaiinsurancegroup.com?token=' + token;
-          await supabase.from('activity_log').insert({
-            audit_id: audit.id,
-            action: 'AUTO_CREATED_FROM_ASSESSMENT',
-            details: { name, company, riskLevel, riskScore, email: to },
-            actor: 'system',
-          });
-        }
-      } catch (dbErr) {
-        console.error('DB error:', dbErr);
-      }
+    // No fallback value: portalLink is assigned only once the audit row exists.
+    let portalLink;
+    try {
+      const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+      const token = Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
+      const { data: audit, error: auditErr } = await supabase.from('audits').insert({
+        client_name: company || name || 'Assessment Lead',
+        client_industry: industry || 'Other',
+        client_contact: name || '',
+        client_email: to,
+        status: 'DRAFT',
+        file_count: 0,
+        client_token: token,
+      }).select().single();
+      // The previous version destructured only `data` and never looked at
+      // `error`, so a rejected insert fell through to the tokenless fallback.
+      if (auditErr || !audit) throw new Error(auditErr?.message || 'audit insert returned no row');
+      portalLink = 'https://audit.theaiinsurancegroup.com?token=' + token;
+
+      // Non-blocking: the lead is already captured and the link is valid, so a
+      // lost log line must not cost us the lead.
+      const { error: logErr } = await supabase.from('activity_log').insert({
+        audit_id: audit.id,
+        action: 'AUTO_CREATED_FROM_ASSESSMENT',
+        details: { name, company, riskLevel, riskScore, email: to },
+        performed_by: 'system',
+      });
+      if (logErr) console.error('send-email: activity_log insert failed:', logErr.message);
+    } catch (dbErr) {
+      console.error('send-email: could not create audit, refusing to send a tokenless link:', dbErr);
+      return res.status(502).json({ error: 'Could not prepare your audit link. Please try again.' });
     }
 
     const riskColor = riskLevel === 'HIGH' ? '#DC2626' : riskLevel === 'MODERATE' ? '#EA580C' : '#16A34A';
