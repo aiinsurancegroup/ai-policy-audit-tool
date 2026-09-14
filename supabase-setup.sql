@@ -265,3 +265,23 @@ REVOKE ALL PRIVILEGES ON TABLE activity_log        FROM anon, authenticated;
 --
 -- 6. finding_validations has 0 rows despite the validation UI existing.
 --    Unexplained -- may be genuine non-use rather than a defect.
+--
+-- 7. Archiving an audit silently kills the client's link. resolveAudit
+--    filters on `deleted_at is null`, so an operator who archives an audit
+--    locks out a client who is mid-flow -- they get "Invalid or expired
+--    link" with no explanation, and no one is told it happened.
+--
+--    Decided behaviour, to build AFTER the token fix (item 2):
+--      a. Warn before archiving an audit that still has a live token and
+--         no client_submitted_at -- the operator is cutting off a client
+--         who has not submitted yet.
+--      b. Archived audits still ACCEPT submissions. Archiving is an
+--         inbox-management action, not a revocation; a client who already
+--         holds a link should never be blocked by it.
+--      c. A submission into an archived audit surfaces it back on the
+--         dashboard, so documents are never received silently.
+--
+--    Sequenced after item 2 because proper revocation belongs with the
+--    token work: once tokens can be expired or revoked deliberately,
+--    "archived" no longer has to double as a revocation mechanism, and
+--    (b) stops being a compromise.
