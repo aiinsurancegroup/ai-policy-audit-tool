@@ -509,7 +509,7 @@ export default function App() {
       try {
         const b64 = await fileToBase64(f.file);
         const resp = await fetch('/api/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
           body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
             { type: 'text', text: 'Analyze this ' + lbl + ' policy for ' + clientName + ' (Industry: ' + clientInd + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
@@ -641,7 +641,7 @@ export default function App() {
         const b64 = dlJson.base64;
         if (!b64) throw new Error('Could not download file');
         const resp = await fetch('/api/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
           body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
             { type: 'text', text: 'Analyze this ' + lbl + ' policy for ' + audit.client_name + ' (Industry: ' + audit.client_industry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
