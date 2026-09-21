@@ -22,6 +22,10 @@ dist-ssr
 .env.test.local
 .env.production.local
 
+# Real client policy documents and anything derived from them -- VINs, DOBs,
+# loan numbers, addresses. Nothing under here is ever committed.
+fixtures/private/
+
 # Vercel
 .vercel
 
