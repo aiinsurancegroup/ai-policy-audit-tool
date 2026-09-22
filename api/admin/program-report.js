@@ -77,10 +77,17 @@ const normName = (s) => (typeof s === "string" ? s.toUpperCase().replace(/[^A-Z0
 const LINE_LABELS = {
   gl: "General Liability", eo: "Errors & Omissions", do: "Directors & Officers",
   cyber: "Cyber Liability", epli: "Employment Practices", products: "Products / Completed Ops",
-  wc: "Workers Compensation", auto_policy: "Commercial Auto", property: "Property / BOP",
+  wc: "Workers Compensation", auto_policy: "Commercial Auto", excess_auto: "Excess Auto",
+  auto_physical_damage: "Auto Physical Damage", property: "Property / BOP",
   umbrella: "Umbrella / Excess", detect: "Unidentified", other: "Other",
 };
 const lineLabel = (t) => LINE_LABELS[t] || t;
+
+// The layers that sit ABOVE something else and therefore carry underlying
+// requirements. An excess auto layer does this exactly as an umbrella does --
+// while it was folded into auto_policy the cross-check could not see it, so an
+// excess layer's requirements were never compared against anything.
+const TOP_LAYER_TYPES = new Set(["umbrella", "excess_auto"]);
 
 const parseDate = (s) => {
   if (!s || typeof s !== "string") return null;
@@ -218,10 +225,10 @@ function buildCrossChecks(policies) {
     };
   });
 
-  const umbrellas = rows.filter((r) => r.policy_type === "umbrella");
-  const underlying = rows.filter((r) => r.policy_type !== "umbrella");
+  const umbrellas = rows.filter((r) => TOP_LAYER_TYPES.has(r.policy_type));
+  const underlying = rows.filter((r) => !TOP_LAYER_TYPES.has(r.policy_type));
 
-  // Underlying limits vs what an umbrella requires. Reported as a comparison
+  // Underlying limits vs what a top layer requires. Reported as a comparison
   // only where BOTH numbers were actually extracted; anything else is
   // "not_extracted", never a pass.
   const underlying_vs_umbrella = umbrellas.map((u) => {

@@ -38,6 +38,12 @@ const POLICY_TYPES = [
   { id: 'products', label: 'Products / Completed Ops', icon: '📦' },
   { id: 'wc', label: 'Workers Compensation', icon: '⚠️' },
     { id: 'auto_policy', label: 'Commercial Auto', icon: '🚗' },
+    // Split out from auto_policy: an excess auto layer and a physical damage
+    // policy sit at different heights in the tower and cover different things,
+    // and folding all three into "Commercial Auto" made the program report
+    // unable to say which one a finding was about.
+    { id: 'excess_auto', label: 'Excess Auto', icon: '🛞' },
+    { id: 'auto_physical_damage', label: 'Auto Physical Damage', icon: '🔧' },
     { id: 'property', label: 'Property / BOP', icon: '🏢' },
     { id: 'umbrella', label: 'Umbrella / Excess', icon: '☂️' },
 ];
@@ -135,7 +141,7 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
 
   RESPOND ONLY with this JSON:
   {
-    "policy_type": "EXACTLY ONE of: gl | eo | do | cyber | epli | products | wc | auto_policy | property | umbrella | other  (auto_policy = any commercial automobile policy including excess/hired/non-owned auto; umbrella = umbrella OR excess liability; use other ONLY if genuinely none of these fit)",
+    "policy_type": "EXACTLY ONE of: gl | eo | do | cyber | epli | products | wc | auto_policy | excess_auto | auto_physical_damage | property | umbrella | other  (auto_policy = a primary business/commercial auto policy; excess_auto = an excess or following-form layer sitting ABOVE a primary auto policy; auto_physical_damage = a policy covering damage to the vehicles themselves rather than liability to others; umbrella = a general umbrella or excess liability policy over multiple lines; use other ONLY if genuinely none of these fit)",
     "carrier": "carrier name",
     "policy_number": "if visible",
     "effective_date": "if visible",
@@ -196,7 +202,9 @@ const AI_TYPE_TO_ID = {
   // Free-text spellings, kept because rows written before the prompt asked for
   // ids still carry them, and a model can always drift back to prose.
   gl: 'gl', 'general liability': 'gl', cgl: 'gl', 'commercial general liability': 'gl',
-  'excess auto': 'auto_policy', 'commercial excess auto': 'auto_policy', 'hired and non-owned auto': 'auto_policy',
+  'excess_auto': 'excess_auto', 'excess auto': 'excess_auto', 'commercial excess auto': 'excess_auto', 'auto excess': 'excess_auto',
+  'auto_physical_damage': 'auto_physical_damage', 'auto physical damage': 'auto_physical_damage', 'physical damage': 'auto_physical_damage',
+  'hired and non-owned auto': 'auto_policy',
   'excess liability': 'umbrella', 'commercial umbrella': 'umbrella', 'excess/umbrella': 'umbrella',
   eo: 'eo', 'e&o': 'eo', 'errors & omissions': 'eo', 'errors and omissions': 'eo', 'professional liability': 'eo',
   do: 'do', 'd&o': 'do', 'directors & officers': 'do', 'directors and officers': 'do',
