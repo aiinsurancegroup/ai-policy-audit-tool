@@ -141,12 +141,19 @@ function shortCarrier(full) {
 // The premium total as printed: no fees, no parentheticals. A labelled total
 // wins; otherwise the largest figure, which excludes a surcharge listed
 // alongside the premium rather than adding it in.
+// Amounts are written more ways than one: "$13,313.00", "USD 13,313.00",
+// "US$13,313". Matching only the dollar sign left a real premium blank on the
+// auto physical damage policy, which reads as "no premium" rather than "we did
+// not parse it". Output is normalised to a dollar figure for the table.
 function premiumTotal(s) {
   if (!s || typeof s !== "string") return null;
+  // Built per call rather than shared at module scope: a /g regex carries
+  // lastIndex, and one shared across calls is a bug waiting to happen.
+  const amount = /(?:US\$|USD\s*|\$)\s?([\d,]+(?:\.\d{1,2})?)/gi;
   const stripped = s.replace(/\([^)]*\)/g, " ");
-  const labelled = stripped.match(/total[^$]{0,30}\$\s?([\d,]+(?:\.\d{2})?)/i);
+  const labelled = stripped.match(/total[^\d$]{0,30}(?:US\$|USD\s*|\$)?\s?([\d,]+(?:\.\d{1,2})?)/i);
   if (labelled) return "$" + labelled[1];
-  const amounts = [...stripped.matchAll(/\$\s?([\d,]+(?:\.\d{2})?)/g)].map((m) => m[1]);
+  const amounts = [...stripped.matchAll(amount)].map((m) => m[1]);
   if (!amounts.length) return null;
   const biggest = amounts.reduce((a, b) => (parseFloat(b.replace(/,/g, "")) > parseFloat(a.replace(/,/g, "")) ? b : a));
   return "$" + biggest;
@@ -433,6 +440,7 @@ NEVER state or imply a premium saving, a percentage reduction, a dollar figure t
 WRITING RULES:
 - "AI" means artificial intelligence and nothing else. NEVER use "AI" as an abbreviation for "additional insured" -- write "additional insured" in full every time. In an insurance report the short form is genuinely ambiguous, and this tool's entire subject is artificial-intelligence coverage.
 - Plain professional English. No marketing language.
+- WHOSE VOICE THIS IS: this report is written BY the client's broker and agency, to the client. There is no third party to refer them to -- we are the broker, the agent and the agency. NEVER write "ask your broker", "your agent", "your agency", "an insurance professional", "speak to your carrier" or any equivalent: it refers the reader to us, which reads as though we did not do the work, and to the client it reads as though someone else is handling their account. Write in the first person plural about what WE will do -- "We recommend...", "We'll place...", "We'll confirm with the carrier...", "We suggest reviewing..." -- and in the second person about what the client should decide or send us. The only outside parties that may be addressed as such are the issuing carrier and the client's own counsel or accountant.
 
 The POLICY TABLE and the COMPUTED FINDINGS are built from the extracted data before you see them. Do not reproduce or recompute them. You are asked for four things only:
 
@@ -442,7 +450,9 @@ RESPOND ONLY with this JSON:
 
   "program_synthesis": [{"finding": "a program-level point drawn from the per-policy analyses together", "evidence": "which policies and what in them", "severity": "HIGH|MODERATE|LOW"}],
 
-  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "which file provides it, when present; the failed file name, when unread; otherwise null", "note": "for not_supplied, what to confirm with the client"}],
+  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague: for not_supplied write what we need from them ('We don't have this on file -- send us the current declarations'), never 'confirm with the client'. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
+
+  "client_recommendations": ["4-8 recommendations in plain language, written to be read BY THE CLIENT. No jargon, no internal sales angles, no figures the documents do not show, and never a premium saving or estimate. Each should say what to do and why it matters in one or two sentences. Refer to a policy by its carrier and line -- 'the General Star excess auto policy' -- NEVER by an upload file name, which the client has never seen. These appear in the client-facing document, so write them as advice to the client, not as notes to the agent. Written in OUR voice as their broker -- 'We recommend raising...', 'We'll confirm the underlying limits with General Star...' -- never 'ask your broker' or 'your agent', because we ARE their broker and there is nobody else to ask."],
 
   "agent_notes": {"lead_hook": "one sentence opening a conversation about this PROGRAM", "primary_opportunity": "the single strongest angle across the whole account", "talking_points": ["3-5 points about the program, not one policy"], "urgency": ["what is time-sensitive, measured against TODAY'S DATE"]}
 }
@@ -583,6 +593,10 @@ export default async function handler(req, res) {
         synthesis: Array.isArray(model.program_synthesis) ? model.program_synthesis : [],
       },
       coverage_position: Array.isArray(model.coverage_position) ? model.coverage_position : [],
+      // Client-facing, and the only recommendations the client document may
+      // show. Kept in Level 1 because the client PDF renders from this row and
+      // makes no call of its own -- so anything it prints has to originate here.
+      client_recommendations: Array.isArray(model.client_recommendations) ? model.client_recommendations.filter((r) => typeof r === "string" && r.trim()) : [],
       // Internal only. Level 3 strips this; it must never reach a client document.
       agent_notes: model.agent_notes ?? null,
     };

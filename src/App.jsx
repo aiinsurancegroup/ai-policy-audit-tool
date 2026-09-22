@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabase';
+import { unreviewedCount, bulkConfirmPatch } from './reviewActions';
 
 const NAVY = '#1A2B45', GOLD = '#B8972A', DARK_BG = '#0F1923', LIGHT_BG = '#F8F6F1';
 const WHITE = '#FFFFFF', LIGHT_GOLD = '#F5EFE0', MID_GRAY = '#6B7280', LIGHT_GRAY = '#E5E7EB';
@@ -214,7 +215,7 @@ const AI_TYPE_TO_ID = {
   wc: 'wc', 'workers compensation': 'wc', "workers' compensation": 'wc', 'workers comp': 'wc',
   'commercial auto': 'auto_policy', auto: 'auto_policy', 'business auto': 'auto_policy', 'auto policy': 'auto_policy',
   property: 'property', bop: 'property', 'property/bop': 'property', 'businessowners': 'property',
-  umbrella: 'umbrella', excess: 'umbrella', 'umbrella/excess': 'umbrella', 'excess liability': 'umbrella',
+  umbrella: 'umbrella', excess: 'umbrella', 'umbrella/excess': 'umbrella',
 };
 const resolveDetectedType = (aiType) => {
   if (!aiType || typeof aiType !== 'string') return null;
@@ -299,6 +300,231 @@ function analysisColumns(result, fallbackType) {
     policy_type: (isAnalysed(status) && resolveDetectedType(result.policy_type)) || fallbackType,
     validation_status: 'PENDING',
   };
+}
+
+// --- Level 3: the client document ------------------------------------------
+//
+// Rendered entirely from the stored Level 1 row. It makes no API call, so it
+// cannot introduce a claim that was not already reviewed on screen -- that is
+// what makes "the client PDF contains nothing not visible in Level 1" a
+// property of the code rather than a promise.
+//
+// agent_notes is never read here. Not filtered, not conditionally hidden:
+// simply never referenced, so no future edit can leak it by flipping a flag.
+const BRAND = {
+  navy: '#0F2847',
+  wordmark: 'The AI Insurance Group',
+  subtitle: 'Coverage Review Report',
+  preparedBy: 'Prepared by Sal Martorano',
+  footer: 'The AI Insurance Group · NJ Insurance Producer License No. 3004245927 · sal@theaiinsurancegroup.com · 917-981-0245',
+};
+
+const BASIS_NOTE = 'This review is based solely on the documents provided for analysis. A coverage line shown as not provided was not supplied for review and may well be in force. Findings are for informational purposes and do not constitute a coverage determination, legal advice, or a binding coverage opinion. Final coverage interpretations should be confirmed with the issuing carrier.';
+
+function ClientDocument({ audit, report, onBack }) {
+  const table = report?.policy_table || [];
+  const position = report?.coverage_position || [];
+  const inPlace = position.filter(p => p.state === 'present');
+  const gaps = position.filter(p => p.state === 'absent');
+  const notProvided = position.filter(p => p.state === 'not_supplied');
+  const recs = report?.client_recommendations || [];
+
+  // A client has never seen the upload file names and they mean nothing to
+  // them -- "2025-2026 Shamrock Materials Excess Auto Policy.pdf" is our
+  // filing, not their policy. Everything the client reads identifies a policy
+  // the way their broker would: carrier, line, policy number.
+  const describePolicy = (fileName) => {
+    const row = table.find(r => r.file_name === fileName);
+    if (!row) return null;
+    const carrier = row.carrier_short || row.carrier;
+    return [carrier, row.line].filter(Boolean).join(' ') + (row.policy_number ? `, ${row.policy_number}` : '');
+  };
+
+  // The prompt is told not to put file names in client-facing text, but a
+  // prompt is an instruction and this is a guarantee: any file name that does
+  // appear in prose is swapped for the same carrier-and-number description, so
+  // one cannot reach the client even if the model ignores the instruction.
+  const scrub = (text) => {
+    if (typeof text !== 'string') return text;
+    return table.reduce((acc, r) => {
+      if (!r.file_name) return acc;
+      const described = describePolicy(r.file_name);
+      const stem = r.file_name.replace(/\.pdf$/i, '');
+      return acc.split(r.file_name).join(described || 'the policy').split(stem).join(described || 'the policy');
+    }, text);
+  };
+
+  // Dated by when the review was finalized, not by when someone opens it.
+  // Using today would mean the same document printed twice carries two
+  // different dates, and a client could receive a report dated later than the
+  // analysis behind it. Falls back to the report's own date, then to today.
+  const isoDate = (audit.validated_at ? String(audit.validated_at).slice(0, 10) : null)
+    || report?.generated_for_date
+    || new Date().toISOString().slice(0, 10);
+  const longDate = new Date(`${isoDate}T00:00:00`).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  // The browser uses document.title as the default file name when saving to
+  // PDF, so this sets the tab title and what lands in the client's downloads
+  // folder at once. Restored on unmount so the rest of the app is unaffected.
+  const docTitle = `${audit.client_name} — Coverage Review — ${isoDate}`;
+  useEffect(() => {
+    const previous = document.title;
+    document.title = docTitle;
+    return () => { document.title = previous; };
+  }, [docTitle]);
+
+  // A deliberate type scale rather than ad-hoc sizes: one large display size
+  // for the client name, one small-caps size for section headings, one body
+  // size, one caption size. Everything on the page is one of these four.
+  const T = {
+    display: { fontSize: 34, fontWeight: 600, color: BRAND.navy, letterSpacing: -0.6, lineHeight: 1.15 },
+    section: { fontSize: 10.5, fontWeight: 700, color: BRAND.navy, letterSpacing: 0.9, textTransform: 'uppercase' },
+    body: { fontSize: 11.5, lineHeight: 1.75, color: '#374151' },
+    caption: { fontSize: 9.5, lineHeight: 1.7, color: '#6B7280' },
+  };
+  const rule = { borderBottom: '1px solid ' + BRAND.navy, paddingBottom: 7, marginBottom: 20 };
+  const Section = ({ title, children, breakBefore }) => (
+    <section className={`pdf-keep${breakBefore ? ' pdf-break' : ''}`} style={{ marginBottom: 44 }}>
+      <div style={{ ...T.section, ...rule }}>{title}</div>
+      {children}
+    </section>
+  );
+  // Small coloured dots carry status. Glyphs like a tick or an exclamation mark
+  // read as a web UI; a dot reads as print.
+  const Dot = ({ tone }) => (
+    <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: tone, flexShrink: 0, marginTop: 7 }} />
+  );
+  // Two columns throughout: the thing on the left, what is said about it on
+  // the right. Nothing runs on as a sentence with a dash in the middle.
+  const Row = ({ tone, label, detail, last }) => (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '9px 0', borderBottom: last ? 'none' : '1px solid #F3F4F6' }}>
+      <Dot tone={tone} />
+      <div style={{ width: 190, flexShrink: 0, fontSize: 11.5, fontWeight: 600, color: BRAND.navy, lineHeight: 1.5 }}>{label}</div>
+      <div style={{ flex: 1, ...T.body, fontSize: 11 }}>{detail || ''}</div>
+    </div>
+  );
+  const th = { padding: '0 8px 8px', fontSize: 8.5, fontWeight: 700, color: '#6B7280', letterSpacing: 0.6, textTransform: 'uppercase', textAlign: 'left', borderBottom: '1px solid ' + BRAND.navy };
+  const cell = { padding: '10px', fontSize: 10.5, color: '#374151', verticalAlign: 'top', lineHeight: 1.5 };
+
+  return (
+    <div style={{ background: WHITE, minHeight: '100vh' }}>
+      <div className="no-print" style={{ background: BRAND.navy, padding: '12px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ color: WHITE, fontSize: 13 }}>Client document — preview. Use Print to save as PDF.</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={{ ...S.btn, padding: '8px 18px', fontSize: 13 }} onClick={() => window.print()}>Print / Save as PDF</button>
+          <button style={{ ...S.btnOut, padding: '8px 18px', fontSize: 13 }} onClick={onBack}>← Back to audit</button>
+        </div>
+      </div>
+
+      <div className="pdf-doc" style={{ maxWidth: 780, margin: '0 auto', padding: '0 0 64px', color: '#1F2937' }}>
+
+        {/* Cover. The navy band carries the wordmark; everything below it is
+            white space and one large name, which is what makes it read as a
+            cover page rather than the top of a web page. */}
+        <div className="pdf-keep">
+          <div style={{ background: BRAND.navy, color: WHITE, padding: '34px 40px 30px' }}>
+            <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: 0.3 }}>{BRAND.wordmark}</div>
+            <div style={{ fontSize: 9.5, marginTop: 7, letterSpacing: 1.8, textTransform: 'uppercase', color: '#9DB4CE' }}>{BRAND.subtitle}</div>
+          </div>
+          <div style={{ padding: '96px 40px 0' }}>
+            <div style={T.display}>{audit.client_name}</div>
+            {audit.client_industry && <div style={{ ...T.body, marginTop: 10, color: '#6B7280' }}>{audit.client_industry}</div>}
+            <div style={{ width: 54, borderBottom: '2px solid ' + BRAND.navy, margin: '32px 0 24px' }} />
+            <div style={T.caption}>{longDate}</div>
+            <div style={{ ...T.caption, color: '#374151', marginTop: 3 }}>{BRAND.preparedBy}</div>
+          </div>
+        </div>
+
+        <div style={{ padding: '0 40px' }}>
+
+          {/* Coverage summary. Row banding instead of gridlines, and the one
+              column of figures right-aligned so the decimal points line up. */}
+          <Section title="Coverage Summary" breakBefore>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+              <colgroup><col style={{ width: '18%' }} /><col style={{ width: '14%' }} /><col style={{ width: '22%' }} /><col style={{ width: '22%' }} /><col style={{ width: '12%' }} /><col style={{ width: '12%' }} /></colgroup>
+              <thead><tr>
+                {['Coverage', 'Carrier', 'Policy Number', 'Limits', 'Expires', 'Premium'].map(h =>
+                  <th key={h} style={{ ...th, textAlign: h === 'Premium' ? 'right' : 'left' }}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {table.map((r, i) => (
+                  <tr key={i} className="pdf-keep" style={{ background: i % 2 ? '#F8FAFC' : WHITE }}>
+                    <td style={{ ...cell, fontWeight: 600, color: BRAND.navy }}>{r.line}</td>
+                    <td style={cell}>{r.carrier_short || r.carrier || '—'}</td>
+                    {/* A policy number is one token even when it contains a
+                        space, as in "IEPUW00315825 / 01". break-all split it
+                        mid-number, which makes it unusable for looking the
+                        policy up -- the one thing this column is for. */}
+                    <td style={{ ...cell, whiteSpace: 'nowrap', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>{r.policy_number || '—'}</td>
+                    <td style={cell}>{r.key_limits || '—'}</td>
+                    <td style={cell}>
+                      {r.expiration_date || '—'}
+                      {r.term_status?.state === 'expired'
+                        ? <span style={{ color: '#B91C1C', display: 'block', fontSize: 9.5 }}>expired</span>
+                        : null}
+                    </td>
+                    <td style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.premium_total || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Section>
+
+          {/* What's in place. The client sees the carrier and policy number they
+              would recognise, never the name of the file we were sent. */}
+          {inPlace.length > 0 && (
+            <Section title="Coverage In Place">
+              {inPlace.map((p, i) => (
+                <Row key={i} tone="#15803D" label={p.line} last={i === inPlace.length - 1}
+                     detail={describePolicy(p.policy) || scrub(p.note)} />
+              ))}
+            </Section>
+          )}
+
+          {/* Gaps and items not provided, kept visibly distinct: one is a
+              finding, the other is a document we were never given. */}
+          {gaps.length > 0 && (
+            <Section title="Coverage Gaps">
+              <div style={{ ...T.caption, marginTop: -6, marginBottom: 6 }}>Not carried on the policies reviewed</div>
+              {gaps.map((p, i) => (
+                <Row key={i} tone="#B91C1C" label={p.line} detail={scrub(p.note)} last={i === gaps.length - 1} />
+              ))}
+            </Section>
+          )}
+
+          {notProvided.length > 0 && (
+            <Section title="Not provided for review">
+              <div style={{ ...T.caption, marginTop: -6, marginBottom: 6 }}>Please confirm whether these are in force</div>
+              {notProvided.map((p, i) => (
+                <Row key={i} tone="#9CA3AF" label={p.line} detail={scrub(p.note)} last={i === notProvided.length - 1} />
+              ))}
+            </Section>
+          )}
+
+          {recs.length > 0 && (
+            <Section title="Recommendations">
+              {recs.map((r, i) => (
+                <div key={i} className="pdf-keep" style={{ display: 'flex', gap: 14, alignItems: 'flex-start', padding: '9px 0', borderBottom: i === recs.length - 1 ? 'none' : '1px solid #F3F4F6' }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: BRAND.navy, minWidth: 16, lineHeight: 1.75 }}>{i + 1}</span>
+                  <span style={T.body}>{scrub(r)}</span>
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {/* Basis, in small grey type. A box with a border would give it the
+              weight of a finding; it is a qualification, not a finding. */}
+          <div className="pdf-keep" style={{ ...T.caption, borderTop: '1px solid #E5E7EB', paddingTop: 14 }}>
+            <span style={{ color: '#374151', fontWeight: 600 }}>Basis of this review. </span>{BASIS_NOTE}
+          </div>
+        </div>
+      </div>
+
+      <div className="pdf-footer" style={{ textAlign: 'center', fontSize: 9, color: '#6B7280', padding: '10px 14px', borderTop: '1px solid #E5E7EB', background: WHITE }}>
+        {BRAND.footer}
+      </div>
+    </div>
+  );
 }
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -878,6 +1104,25 @@ export default function App() {
     }
   };
 
+  // Bulk confirm. Only fills in findings that are still UNREVIEWED, so an
+  // earlier Reject or Modify is never silently overwritten by a later bulk
+  // click. Nothing is written to the database here -- it sets exactly the same
+  // local state the per-finding buttons set -- so every finding can still be
+  // changed individually afterwards, and a misclick costs nothing until
+  // Validate & Finalize writes the trail.
+  const unreviewedIn = (policyIndex) => unreviewedCount(curPolicies, fActions, policyIndex);
+
+  const confirmAll = async (policyIndex) => {
+    const { patch, count, perFile } = bulkConfirmPatch(curPolicies, fActions, policyIndex);
+    if (!count) return;
+    setFActions(prev => ({ ...prev, ...patch }));
+    // One entry, not one per finding, and a distinct action name: the trail
+    // should show that these were accepted in bulk rather than read one by one.
+    await logActivity(adminPw, curAudit.id, 'FINDINGS_BULK_CONFIRMED',
+      { scope: policyIndex === undefined ? 'whole audit' : 'single policy', findings_confirmed: count, policies: perFile },
+      valName || 'operator');
+  };
+
   const allReviewed = () => {
     for (let pi = 0; pi < curPolicies.length; pi++) {
       const findings = curPolicies[pi].ai_raw_output?.findings || [];
@@ -1146,6 +1391,14 @@ export default function App() {
   }
 
   // ============ ACTIVITY LOG ============
+  // Level 3. Guarded twice over: the button only exists on a finalized audit
+  // with a stored report, and this refuses to render without both -- so a
+  // stale screen state cannot put an unvalidated report in front of a client.
+  if (screen === 'client-doc') {
+    if (!curAudit || curAudit.status !== 'VALIDATED' || !progReport) { setScreen('report'); return null; }
+    return <ClientDocument audit={curAudit} report={progReport} onBack={() => setScreen('report')} />;
+  }
+
   if (screen === 'activity-log') return (
     <div style={S.app}>
       <Hdr right={<button style={S.btnOut} onClick={() => setScreen('dashboard')}>← Dashboard</button>} />
@@ -1595,7 +1848,14 @@ export default function App() {
             {out.summary && <div style={{ padding: 16, background: LIGHT_GOLD, borderRadius: 8, fontSize: 14, lineHeight: 1.7, marginBottom: 16, borderLeft: '3px solid ' + GOLD }}>{out.summary}</div>}
 
             {findings.length > 0 && <div style={{ marginBottom: 16 }}>
-              <div style={S.sec}>Findings {isDraft && <span style={{ fontWeight: 400, fontSize: 11, color: MID_GRAY }}>— Review each</span>}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                <div style={S.sec}>Findings {isDraft && <span style={{ fontWeight: 400, fontSize: 11, color: MID_GRAY }}>— Review each</span>}</div>
+                {isDraft && unreviewedIn(pi) > 0 && (
+                  <button className="no-print" style={S.actionBtn(false, { small: true })} onClick={() => confirmAll(pi)}>
+                    ✓ Confirm remaining {unreviewedIn(pi)}
+                  </button>
+                )}
+              </div>
               {findings.map((f, fi) => {
                 const k = pi + '-' + fi, act = fActions[k] || '';
                 return (<div key={fi} style={{ padding: 14, background: f.type === 'EXCLUSION' ? '#FEF2F2' : f.type === 'SILENT_GAP' ? '#FFFBEB' : f.type === 'AFFIRMATIVE' ? '#F0FDF4' : '#F9FAFB', borderRadius: 8, marginBottom: 8, borderLeft: '3px solid ' + (f.type === 'EXCLUSION' ? RED : f.type === 'SILENT_GAP' ? ORANGE : f.type === 'AFFIRMATIVE' ? GREEN : LIGHT_GRAY) }}>
@@ -1726,7 +1986,16 @@ export default function App() {
                 A finalized report must not draw findings, gaps or an overall risk rating from a document that was never read. Re-run or remove it first.
               </div>
             )}
-            {!allReviewed() && <div style={{ fontSize: 12, color: ORANGE }}>⚠️ Review all findings above before validating.</div>}
+            {!allReviewed() && (
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, color: ORANGE }}>⚠️ Review all findings above before validating.</div>
+                {unreviewedIn() > 0 && (
+                  <button style={S.actionBtn(false, { small: true })} onClick={() => confirmAll()}>
+                    ✓ Confirm all remaining {unreviewedIn()} across this audit
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -1739,6 +2008,14 @@ export default function App() {
             Questions about this report? Contact The AI Insurance Group — sal@theaiinsurancegroup.com · 917-981-0245.
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }} className="no-print">
+            {/* The client document. Only after Validate & Finalize, and only
+                when a Level 1 report exists to render from -- it makes no call
+                of its own, so without that row there is nothing to print. */}
+            {!isDraft && (
+              progReport
+                ? <button style={S.btn} onClick={() => { logActivity(adminPw, a.id, 'CLIENT_DOCUMENT_OPENED', {}, valName || 'operator'); setScreen('client-doc'); }}>📄 Client Document</button>
+                : <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', alignSelf: 'center' }}>Generate the program report to produce the client document.</span>
+            )}
             {/* Collapsed cards are not rendered at all, so printing without
                 expanding them first would silently produce a report missing
                 every policy's detail. Expand, let React paint, then print. */}
