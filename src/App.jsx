@@ -530,6 +530,22 @@ const S = {
   btnSm: { background: GOLD, color: WHITE, border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
   btnOut: { background: 'transparent', color: WHITE, border: '1px solid rgba(255,255,255,0.3)', borderRadius: 8, padding: '10px 24px', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
   btnGreen: { background: GREEN, color: WHITE, border: 'none', borderRadius: 8, padding: '12px 28px', fontSize: 15, fontWeight: 600, cursor: 'pointer' },
+  // Buttons that sit on a light card. btnOut above is white-on-transparent for
+  // the navy header bar; on a light background it renders white text on
+  // near-white and is effectively invisible. Disabled is grey-on-grey with a
+  // not-allowed cursor -- visibly unavailable, rather than an enabled-looking
+  // button dimmed by opacity, which reads as a rendering glitch.
+  actionBtn: (disabled, opts = {}) => ({
+    background: disabled ? '#F3F4F6' : (opts.primary ? NAVY : WHITE),
+    color: disabled ? '#9CA3AF' : (opts.primary ? WHITE : NAVY),
+    border: '1px solid ' + (disabled ? LIGHT_GRAY : NAVY),
+    borderRadius: 6,
+    padding: opts.small ? '6px 12px' : '9px 18px',
+    fontSize: opts.small ? 12 : 13,
+    fontWeight: 600,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    whiteSpace: 'nowrap',
+  }),
   btnRed: { background: 'transparent', color: RED, border: '1px solid ' + RED, borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' },
   btnGhost: { background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: 12 },
   input: { width: '100%', padding: '12px 16px', border: '1px solid ' + LIGHT_GRAY, borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box' },
@@ -1231,14 +1247,14 @@ export default function App() {
                   {failed2 && (
                     <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 6, flexWrap: 'wrap' }}>
                       <button
-                        style={{ ...S.btnOut, padding: '4px 10px', fontSize: 11, opacity: rowBusy ? 0.4 : 1 }}
+                        style={S.actionBtn(!!rowBusy, { small: true, primary: true })}
                         disabled={!!rowBusy}
                         onClick={() => { replaceTarget.current = pol; setRowErr(''); replaceRef.current?.click(); }}>
                         {rowBusy === pol.id ? 'Working…' : '↑ Replace file'}
                       </button>
                       {pol.storage_path ? (
                         <button
-                          style={{ ...S.btnOut, padding: '4px 10px', fontSize: 11, opacity: rowBusy ? 0.4 : 1 }}
+                          style={S.actionBtn(!!rowBusy, { small: true })}
                           disabled={!!rowBusy}
                           onClick={() => rerunPolicy(pol)}>
                           ↻ Re-run
@@ -1270,7 +1286,7 @@ export default function App() {
               style={{ ...S.input, width: 'auto', padding: '6px 10px', fontSize: 12 }}>
               {POLICY_TYPES.map(pt => <option key={pt.id} value={pt.id}>{pt.icon} {pt.label}</option>)}
             </select>
-            <button style={{ ...S.btnOut, padding: '6px 12px', fontSize: 12, opacity: rowBusy ? 0.4 : 1 }}
+            <button style={S.actionBtn(!!rowBusy, { small: true })}
               disabled={!!rowBusy} onClick={() => { setRowErr(''); addRef.current?.click(); }}>
               {rowBusy === 'new' ? 'Analyzing…' : '+ Add policy'}
             </button>
@@ -1289,7 +1305,7 @@ export default function App() {
                 </div>
               </div>
               <button
-                style={{ ...S.btnOut, opacity: (progLoading || unanalysedPolicies().length > 0 || !curPolicies.length) ? 0.4 : 1 }}
+                style={S.actionBtn(progLoading || unanalysedPolicies().length > 0 || !curPolicies.length, { primary: true })}
                 disabled={progLoading || unanalysedPolicies().length > 0 || !curPolicies.length}
                 onClick={generateProgramReport}>
                 {progLoading ? 'Generating…' : progReport ? '↻ Regenerate' : 'Generate program report'}
