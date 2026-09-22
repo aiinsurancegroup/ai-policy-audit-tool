@@ -55,6 +55,19 @@ for (const section of ['Coverage Summary', 'Coverage In Place', 'Coverage Gaps',
 expect('gaps and not-provided are separated', body.includes('Not provided for review'), true);
 expect('not-provided says it may be in force', src.includes('may well be in force'), true);
 
+console.log('\n--- file name and document title');
+expect('title is client name, purpose, date', body.includes('`${audit.client_name} — Coverage Review — ${isoDate}`'), true);
+expect('document.title is set from it', body.includes('document.title = docTitle'), true);
+expect('  and restored on unmount', body.includes('document.title = previous'), true);
+expect('dated by validated_at first', body.includes('audit.validated_at'), true);
+expect('  then the report date', body.includes('report?.generated_for_date'), true);
+expect('cover shows the same date, not today', body.includes('{longDate}') && !body.includes('{today}'), true);
+
+console.log('\n--- no solicitation reaches the client document');
+for (const phrase of ['Alexander', 'Munich Re', "Lloyd's", 'Ready to Close']) {
+  expect(`  no "${phrase}"`, src.includes(phrase) && body.includes(phrase), false);
+}
+
 console.log('\n--- recommendations originate in Level 1');
 expect('client_recommendations produced by the server', server.includes('client_recommendations'), true);
 expect('  and read by the document', body.includes('client_recommendations'), true);

@@ -328,7 +328,25 @@ function ClientDocument({ audit, report, onBack }) {
   const gaps = position.filter(p => p.state === 'absent');
   const notProvided = position.filter(p => p.state === 'not_supplied');
   const recs = report?.client_recommendations || [];
-  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  // Dated by when the review was finalized, not by when someone opens it.
+  // Using today would mean the same document printed twice carries two
+  // different dates, and a client could receive a report dated later than the
+  // analysis behind it. Falls back to the report's own date, then to today.
+  const isoDate = (audit.validated_at ? String(audit.validated_at).slice(0, 10) : null)
+    || report?.generated_for_date
+    || new Date().toISOString().slice(0, 10);
+  const longDate = new Date(`${isoDate}T00:00:00`).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  // The browser uses document.title as the default file name when saving to
+  // PDF, so this sets the tab title and what lands in the client's downloads
+  // folder at once. Restored on unmount so the rest of the app is unaffected.
+  const docTitle = `${audit.client_name} — Coverage Review — ${isoDate}`;
+  useEffect(() => {
+    const previous = document.title;
+    document.title = docTitle;
+    return () => { document.title = previous; };
+  }, [docTitle]);
 
   const h2 = { fontSize: 15, fontWeight: 700, color: BRAND.navy, letterSpacing: 0.5, textTransform: 'uppercase', borderBottom: '2px solid ' + BRAND.navy, paddingBottom: 6, marginBottom: 14 };
   const cell = { padding: '7px 8px', fontSize: 11, borderBottom: '1px solid #E5E7EB', textAlign: 'left', verticalAlign: 'top' };
@@ -351,7 +369,7 @@ function ClientDocument({ audit, report, onBack }) {
           <div style={{ fontSize: 15, color: '#6B7280', marginTop: 8, letterSpacing: 3, textTransform: 'uppercase' }}>{BRAND.subtitle}</div>
           <div style={{ fontSize: 24, fontWeight: 700, color: BRAND.navy, marginTop: 40 }}>{audit.client_name}</div>
           {audit.client_industry && <div style={{ fontSize: 13, color: '#6B7280', marginTop: 6 }}>{audit.client_industry}</div>}
-          <div style={{ fontSize: 13, color: '#6B7280', marginTop: 28 }}>{today}</div>
+          <div style={{ fontSize: 13, color: '#6B7280', marginTop: 28 }}>{longDate}</div>
           <div style={{ fontSize: 13, color: '#374151', marginTop: 4 }}>{BRAND.preparedBy}</div>
         </div>
 
