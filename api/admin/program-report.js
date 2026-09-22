@@ -444,6 +444,8 @@ RESPOND ONLY with this JSON:
 
   "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "which file provides it, when present; the failed file name, when unread; otherwise null", "note": "for not_supplied, what to confirm with the client"}],
 
+  "client_recommendations": ["4-8 recommendations in plain language, written to be read BY THE CLIENT. No jargon, no internal sales angles, no figures the documents do not show, and never a premium saving or estimate. Each should say what to do and why it matters in one or two sentences. These appear in the client-facing document, so write them as advice to the client, not as notes to the agent."],
+
   "agent_notes": {"lead_hook": "one sentence opening a conversation about this PROGRAM", "primary_opportunity": "the single strongest angle across the whole account", "talking_points": ["3-5 points about the program, not one policy"], "urgency": ["what is time-sensitive, measured against TODAY'S DATE"]}
 }
 
@@ -583,6 +585,10 @@ export default async function handler(req, res) {
         synthesis: Array.isArray(model.program_synthesis) ? model.program_synthesis : [],
       },
       coverage_position: Array.isArray(model.coverage_position) ? model.coverage_position : [],
+      // Client-facing, and the only recommendations the client document may
+      // show. Kept in Level 1 because the client PDF renders from this row and
+      // makes no call of its own -- so anything it prints has to originate here.
+      client_recommendations: Array.isArray(model.client_recommendations) ? model.client_recommendations.filter((r) => typeof r === "string" && r.trim()) : [],
       // Internal only. Level 3 strips this; it must never reach a client document.
       agent_notes: model.agent_notes ?? null,
     };

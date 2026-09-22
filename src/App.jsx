@@ -301,6 +301,152 @@ function analysisColumns(result, fallbackType) {
   };
 }
 
+// --- Level 3: the client document ------------------------------------------
+//
+// Rendered entirely from the stored Level 1 row. It makes no API call, so it
+// cannot introduce a claim that was not already reviewed on screen -- that is
+// what makes "the client PDF contains nothing not visible in Level 1" a
+// property of the code rather than a promise.
+//
+// agent_notes is never read here. Not filtered, not conditionally hidden:
+// simply never referenced, so no future edit can leak it by flipping a flag.
+const BRAND = {
+  navy: '#0F2847',
+  wordmark: 'The AI Insurance Group',
+  subtitle: 'Coverage Review Report',
+  preparedBy: 'Prepared by Sal Martorano',
+  footer: 'The AI Insurance Group · NJ Insurance Producer License No. 3004245927 · sal@theaiinsurancegroup.com · 917-981-0245',
+};
+
+const BASIS_NOTE = 'This review is based solely on the documents provided for analysis. A coverage line shown as not provided was not supplied for review and may well be in force. Findings are for informational purposes and do not constitute a coverage determination, legal advice, or a binding coverage opinion. Final coverage interpretations should be confirmed with the issuing carrier.';
+
+function ClientDocument({ audit, report, onBack }) {
+  const table = report?.policy_table || [];
+  const position = report?.coverage_position || [];
+  const inPlace = position.filter(p => p.state === 'present');
+  const gaps = position.filter(p => p.state === 'absent');
+  const notProvided = position.filter(p => p.state === 'not_supplied');
+  const recs = report?.client_recommendations || [];
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  const h2 = { fontSize: 15, fontWeight: 700, color: BRAND.navy, letterSpacing: 0.5, textTransform: 'uppercase', borderBottom: '2px solid ' + BRAND.navy, paddingBottom: 6, marginBottom: 14 };
+  const cell = { padding: '7px 8px', fontSize: 11, borderBottom: '1px solid #E5E7EB', textAlign: 'left', verticalAlign: 'top' };
+
+  return (
+    <div style={{ background: WHITE, minHeight: '100vh' }}>
+      <div className="no-print" style={{ background: BRAND.navy, padding: '12px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ color: WHITE, fontSize: 13 }}>Client document — preview. Use Print to save as PDF.</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={{ ...S.btn, padding: '8px 18px', fontSize: 13 }} onClick={() => window.print()}>Print / Save as PDF</button>
+          <button style={{ ...S.btnOut, padding: '8px 18px', fontSize: 13 }} onClick={onBack}>← Back to audit</button>
+        </div>
+      </div>
+
+      <div className="pdf-doc" style={{ maxWidth: 860, margin: '0 auto', padding: '32px 28px 72px', color: '#1F2937' }}>
+
+        {/* Cover */}
+        <div className="pdf-keep" style={{ textAlign: 'center', padding: '56px 0 48px', borderBottom: '3px solid ' + BRAND.navy, marginBottom: 36 }}>
+          <div style={{ fontSize: 30, fontWeight: 800, color: BRAND.navy, letterSpacing: -0.5 }}>{BRAND.wordmark}</div>
+          <div style={{ fontSize: 15, color: '#6B7280', marginTop: 8, letterSpacing: 3, textTransform: 'uppercase' }}>{BRAND.subtitle}</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: BRAND.navy, marginTop: 40 }}>{audit.client_name}</div>
+          {audit.client_industry && <div style={{ fontSize: 13, color: '#6B7280', marginTop: 6 }}>{audit.client_industry}</div>}
+          <div style={{ fontSize: 13, color: '#6B7280', marginTop: 28 }}>{today}</div>
+          <div style={{ fontSize: 13, color: '#374151', marginTop: 4 }}>{BRAND.preparedBy}</div>
+        </div>
+
+        {/* Coverage summary */}
+        <div style={{ marginBottom: 32 }}>
+          <div style={h2}>Coverage Summary</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+            <colgroup><col style={{ width: '22%' }} /><col style={{ width: '16%' }} /><col style={{ width: '16%' }} /><col style={{ width: '22%' }} /><col style={{ width: '14%' }} /><col style={{ width: '10%' }} /></colgroup>
+            <thead><tr style={{ background: '#F3F4F6' }}>
+              {['Coverage', 'Carrier', 'Policy Number', 'Limits', 'Expires', 'Premium'].map(h =>
+                <th key={h} style={{ ...cell, fontWeight: 700, color: BRAND.navy, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {table.map((r, i) => (
+                <tr key={i} className="pdf-keep">
+                  <td style={{ ...cell, fontWeight: 700, color: BRAND.navy }}>{r.line}</td>
+                  <td style={cell}>{r.carrier_short || r.carrier || '—'}</td>
+                  <td style={{ ...cell, wordBreak: 'break-all' }}>{r.policy_number || '—'}</td>
+                  <td style={cell}>{r.key_limits || '—'}</td>
+                  <td style={cell}>{r.expiration_date || '—'}{r.term_status?.state === 'expired' ? ' (expired)' : ''}</td>
+                  <td style={{ ...cell, textAlign: 'right' }}>{r.premium_total || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* What's in place */}
+        {inPlace.length > 0 && (
+          <div className="pdf-keep" style={{ marginBottom: 32 }}>
+            <div style={h2}>Coverage In Place</div>
+            {inPlace.map((p, i) => (
+              <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.6 }}>
+                <span style={{ color: '#16A34A', fontWeight: 700 }}>✓</span>
+                <span><strong style={{ color: BRAND.navy }}>{p.line}</strong>{p.policy ? <span style={{ color: '#6B7280' }}> — {p.policy}</span> : null}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Gaps and items not provided, kept visibly distinct: one is a finding,
+            the other is a document we were never given. */}
+        {(gaps.length > 0 || notProvided.length > 0) && (
+          <div className="pdf-keep" style={{ marginBottom: 32 }}>
+            <div style={h2}>Coverage Gaps &amp; Items Not Provided</div>
+            {gaps.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#B91C1C', marginBottom: 8 }}>Not carried on the policies reviewed</div>
+                {gaps.map((p, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.6 }}>
+                    <span style={{ color: '#B91C1C', fontWeight: 700 }}>!</span>
+                    <span><strong style={{ color: BRAND.navy }}>{p.line}</strong>{p.note ? <span style={{ color: '#6B7280' }}> — {p.note}</span> : null}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {notProvided.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#6B7280', marginBottom: 8 }}>Not provided for review — please confirm whether these are in force</div>
+                {notProvided.map((p, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.6 }}>
+                    <span style={{ color: '#6B7280', fontWeight: 700 }}>?</span>
+                    <span><strong style={{ color: BRAND.navy }}>{p.line}</strong>{p.note ? <span style={{ color: '#6B7280' }}> — {p.note}</span> : null}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Recommendations */}
+        {recs.length > 0 && (
+          <div style={{ marginBottom: 32 }}>
+            <div style={h2}>Recommendations</div>
+            {recs.map((r, i) => (
+              <div key={i} className="pdf-keep" style={{ display: 'flex', gap: 12, marginBottom: 12, fontSize: 12, lineHeight: 1.7 }}>
+                <span style={{ color: BRAND.navy, fontWeight: 700, minWidth: 18 }}>{i + 1}.</span>
+                <span>{r}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Basis */}
+        <div className="pdf-keep" style={{ padding: 16, background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: 6, fontSize: 10.5, lineHeight: 1.7, color: '#4B5563' }}>
+          <strong style={{ color: BRAND.navy }}>Basis of this review. </strong>{BASIS_NOTE}
+        </div>
+      </div>
+
+      <div className="pdf-footer" style={{ textAlign: 'center', fontSize: 9, color: '#6B7280', padding: '10px 14px', borderTop: '1px solid #E5E7EB', background: WHITE }}>
+        {BRAND.footer}
+      </div>
+    </div>
+  );
+}
+
 const genId = () => Math.random().toString(36).substr(2, 9);
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 const fmtDateTime = (iso) => new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -1146,6 +1292,14 @@ export default function App() {
   }
 
   // ============ ACTIVITY LOG ============
+  // Level 3. Guarded twice over: the button only exists on a finalized audit
+  // with a stored report, and this refuses to render without both -- so a
+  // stale screen state cannot put an unvalidated report in front of a client.
+  if (screen === 'client-doc') {
+    if (!curAudit || curAudit.status !== 'VALIDATED' || !progReport) { setScreen('report'); return null; }
+    return <ClientDocument audit={curAudit} report={progReport} onBack={() => setScreen('report')} />;
+  }
+
   if (screen === 'activity-log') return (
     <div style={S.app}>
       <Hdr right={<button style={S.btnOut} onClick={() => setScreen('dashboard')}>← Dashboard</button>} />
@@ -1736,6 +1890,14 @@ export default function App() {
             The AI Insurance Group works with Lloyd's, Munich Re, and specialty AI liability markets to place affirmative coverage.
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }} className="no-print">
+            {/* The client document. Only after Validate & Finalize, and only
+                when a Level 1 report exists to render from -- it makes no call
+                of its own, so without that row there is nothing to print. */}
+            {!isDraft && (
+              progReport
+                ? <button style={S.btn} onClick={() => { logActivity(adminPw, a.id, 'CLIENT_DOCUMENT_OPENED', {}, valName || 'operator'); setScreen('client-doc'); }}>📄 Client Document</button>
+                : <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', alignSelf: 'center' }}>Generate the program report to produce the client document.</span>
+            )}
             {/* Collapsed cards are not rendered at all, so printing without
                 expanding them first would silently produce a report missing
                 every policy's detail. Expand, let React paint, then print. */}

@@ -13,7 +13,16 @@
       @media print {
         .no-print { display: none !important; }
         body { background: white !important; }
+        /* Client document. Each section starts a page; nothing that reads as a
+           unit is allowed to split across one. */
+        .pdf-break { page-break-before: always; }
+        .pdf-keep { break-inside: avoid; page-break-inside: avoid; }
+        /* position: fixed repeats on every printed page, which is what a
+           licence number in a footer has to do. */
+        .pdf-footer { position: fixed; bottom: 0; left: 0; right: 0; }
+        .pdf-doc { padding: 0 !important; }
       }
+      @page { size: A4; margin: 14mm 14mm 20mm; }
     </style>
   </head>
   <body>
