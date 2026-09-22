@@ -184,11 +184,112 @@ New table `audit_program_analysis`, keyed by `audit_id`, so the pass re-runs wit
 touching per-policy rows. **Flag migration before running.** Admin button "Generate program
 report", enabled only when every policy in the audit is a success state.
 
+### 2.5 Output shape — three levels
+
+The per-policy analyses are **inputs, not the product**. The product is one layered
+document per audit.
+
+**Level 1 — Program Summary.** Top of the audit page, always visible. Stored in
+`audit_program_analysis.result`.
+
+- **Policy table** — one row per policy: line, carrier, policy number, key limits and
+  deductibles, term status (in force / expired on date / renews on date), AI verdict,
+  premium as shown on the document. *Facts from extraction only.* Everything except
+  limits and deductibles is computed in code from stored fields, not asked of the model.
+- **Program findings** — what no single policy can show. **Computed cross-checks first**
+  (assembled in code): expired layers sitting under in-force ones; excess/umbrella
+  underlying requirements against the actual limits on uploaded policies; underlying
+  policies named on an umbrella but not supplied; coverage one policy says is missing
+  that another provides; named-insured and address mismatches. **Then** the model's
+  synthesis of the per-policy findings into 5–8 program-level points.
+- **Coverage position** — every line of business in one of four states: `present`
+  (naming the policy), `absent` (only when a supplied document affirmatively shows it is
+  not carried), `not_supplied` ("confirm with client"), `unread` (failed analysis —
+  blocks the report, listed by file name).
+- **Agent notes** — one lead hook, one primary opportunity, talking points, urgency,
+  written on the whole program rather than per policy. **Internal only.**
+
+**Level 2 — Per-policy detail.** Collapsed by default. Content unchanged from today's
+per-policy view, one expandable section per policy.
+
+**Level 3 — Client PDF.** Generated only from a validated/finalized audit, rendered from
+Level 1 with agent notes stripped. **No AI call** — it is a rendering, not a new
+analysis, which is what makes the last rule below enforceable. Sections: cover with
+client name and date; coverage summary table; what is in place; coverage gaps and items
+not provided; recommendations in plain language; a note that findings are based on the
+documents provided. Agency branding. Never premium estimates, never internal notes.
+
+### 2.6 Rules
+
+- The analysis never states a saving or a premium estimate. Only the premium printed on a
+  document.
+- **"AI" means artificial intelligence only.** Write **"additional insured"** in full
+  everywhere — in an insurance report the abbreviation is genuinely ambiguous, and this
+  tool's whole subject is artificial-intelligence coverage.
+- Every gap carries one of the four states. None may be stated without one.
+- The client PDF cannot contain anything not visible in Level 1.
+
+### Build order
+
+(a) Program report generating on the five-policy audit, Level 1 shown.
+(b) Collapse per-policy detail into Level 2.
+(c) Client PDF.
+
 ### Verification
 
 All five policies of the five-policy client, as one audit (per blocker 2). Confirm the
 report names real cross-policy gaps, and that forcing one policy to fail makes the pass
 refuse and name it rather than reporting that line absent.
+
+---
+
+---
+
+## Branch 3 — server-side PDF reads, after the program report ships
+
+### Why
+
+A 9.89MB Auto Physical Damage policy failed with "Document too large to
+analyse". The limit it hit is **bytes**, not pages or tokens, and it is not ours
+to raise:
+
+| Limit | Value | Effect |
+|---|---|---|
+| `MAX_BODY_BYTES` in `api/analyze.js` | 4MB | would reject it |
+| **Vercel request body** | **4.5MB** | **platform cap, rejects before our function runs** |
+| Anthropic request | 32MB | would have accepted the file |
+
+The PDF is base64-encoded into the request body, which adds ~33%, so the
+practical ceiling today is about a **3MB PDF** — against an Anthropic limit of
+32MB. The document is not too large to analyse; it is too large to *post*.
+
+### What changes
+
+1. **The server reads the PDF from Supabase storage** rather than receiving it
+   in the request body. `api/analyze.js` takes a `storage_path`, fetches the
+   object with the service role key, and forwards it to Anthropic. The file
+   never crosses the request boundary, so the 4.5MB cap stops applying and the
+   real ceiling becomes Anthropic's 32MB.
+
+2. **Admin uploads must save to storage first.** This is the part that is
+   larger than it sounds: `storage_path` is null on every admin-uploaded row,
+   because `runAudit` streams the file straight to the API and never stores it.
+   Only client-portal uploads persist. Until that changes, a failed admin upload
+   cannot be re-run at all — the document is simply gone, which is why ten of
+   the twelve FAILED rows found earlier were unrecoverable.
+
+Both halves are needed for either to be worth much: server-side reads without
+stored files only helps portal uploads, and stored files without server-side
+reads still hit the 4.5MB cap.
+
+### Watch for
+
+- `api/client/portal.js` already accepts 25MB uploads, so storage already holds
+  files this path cannot currently analyse. That mismatch closes here.
+- Deleting an `audit_policies` row will start orphaning a storage object; today
+  it cannot, because nothing is stored.
+- The 120s → 300s function duration matters more once larger documents actually
+  reach the model.
 
 ---
 

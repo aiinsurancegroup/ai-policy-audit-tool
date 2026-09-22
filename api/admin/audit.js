@@ -41,6 +41,13 @@ const ALLOWED_TABLES = new Set([
   "client_consents",
   "finding_validations",
   "activity_log",
+  // Read back a previously generated program report. Writes go through
+  // api/admin/program-report.js, which is the only thing that may create one --
+  // it enforces the "every policy must have been read" guard first. Listing the
+  // table here does mean a compromised frontend could insert a row directly;
+  // that would be a report with no guarantee behind it, which is why the guard
+  // lives on the server rather than in the button.
+  "audit_program_analysis",
 ]);
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "https://dtgsegabaivtgyccrcxi.supabase.co";

@@ -38,6 +38,12 @@ const POLICY_TYPES = [
   { id: 'products', label: 'Products / Completed Ops', icon: '📦' },
   { id: 'wc', label: 'Workers Compensation', icon: '⚠️' },
     { id: 'auto_policy', label: 'Commercial Auto', icon: '🚗' },
+    // Split out from auto_policy: an excess auto layer and a physical damage
+    // policy sit at different heights in the tower and cover different things,
+    // and folding all three into "Commercial Auto" made the program report
+    // unable to say which one a finding was about.
+    { id: 'excess_auto', label: 'Excess Auto', icon: '🛞' },
+    { id: 'auto_physical_damage', label: 'Auto Physical Damage', icon: '🔧' },
     { id: 'property', label: 'Property / BOP', icon: '🏢' },
     { id: 'umbrella', label: 'Umbrella / Excess', icon: '☂️' },
 ];
@@ -135,7 +141,7 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
 
   RESPOND ONLY with this JSON:
   {
-    "policy_type": "EXACTLY ONE of: gl | eo | do | cyber | epli | products | wc | auto_policy | property | umbrella | other  (auto_policy = any commercial automobile policy including excess/hired/non-owned auto; umbrella = umbrella OR excess liability; use other ONLY if genuinely none of these fit)",
+    "policy_type": "EXACTLY ONE of: gl | eo | do | cyber | epli | products | wc | auto_policy | excess_auto | auto_physical_damage | property | umbrella | other  (auto_policy = a primary business/commercial auto policy; excess_auto = an excess or following-form layer sitting ABOVE a primary auto policy; auto_physical_damage = a policy covering damage to the vehicles themselves rather than liability to others; umbrella = a general umbrella or excess liability policy over multiple lines; use other ONLY if genuinely none of these fit)",
     "carrier": "carrier name",
     "policy_number": "if visible",
     "effective_date": "if visible",
@@ -196,7 +202,9 @@ const AI_TYPE_TO_ID = {
   // Free-text spellings, kept because rows written before the prompt asked for
   // ids still carry them, and a model can always drift back to prose.
   gl: 'gl', 'general liability': 'gl', cgl: 'gl', 'commercial general liability': 'gl',
-  'excess auto': 'auto_policy', 'commercial excess auto': 'auto_policy', 'hired and non-owned auto': 'auto_policy',
+  'excess_auto': 'excess_auto', 'excess auto': 'excess_auto', 'commercial excess auto': 'excess_auto', 'auto excess': 'excess_auto',
+  'auto_physical_damage': 'auto_physical_damage', 'auto physical damage': 'auto_physical_damage', 'physical damage': 'auto_physical_damage',
+  'hired and non-owned auto': 'auto_policy',
   'excess liability': 'umbrella', 'commercial umbrella': 'umbrella', 'excess/umbrella': 'umbrella',
   eo: 'eo', 'e&o': 'eo', 'errors & omissions': 'eo', 'errors and omissions': 'eo', 'professional liability': 'eo',
   do: 'do', 'd&o': 'do', 'directors & officers': 'do', 'directors and officers': 'do',
@@ -243,6 +251,55 @@ const todayISO = () => {
   const d = new Date();
   return `${d.toISOString().slice(0, 10)} (${d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })})`;
 };
+
+// The largest PDF that can reach the analysis endpoint. The file is base64
+// encoded into the request body, which adds about a third, and the server caps
+// that body at 4MB (Vercel rejects anything over 4.5MB before our code runs).
+// Checked here as well as on the server so the operator is told immediately,
+// by a message naming the actual file, rather than after a wasted upload.
+// Branch 3 removes this ceiling by reading the PDF from storage server-side.
+const MAX_PDF_BYTES = 2.9 * 1024 * 1024;
+const mb = (bytes) => (bytes / 1048576).toFixed(1);
+
+// One analysis call. Extracted because there were two near-identical copies of
+// this and replace/re-run/add would have made five; a fix applied to four of
+// five copies is how the "|| 'UNKNOWN'" bug survived as long as it did.
+async function analyzePdf(password, { b64, label, clientName, clientIndustry }) {
+  try {
+    const resp = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': password },
+      body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
+        { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + label + ' policy for ' + clientName + ' (Industry: ' + clientIndustry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
+      ] }] }),
+    });
+    if (!resp.ok) throw new Error(await describeFailure(resp));
+    const data = await resp.json();
+    const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
+    return JSON.parse(txt.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    return { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } };
+  }
+}
+
+// The columns an analysis writes, so replace / re-run / add all record a result
+// the same way and a failed row never keeps stale values from a previous run.
+function analysisColumns(result, fallbackType) {
+  const status = result.ai_status || 'FAILED';
+  return {
+    ai_status: status,
+    risk_level: isVerdict(status) ? (result.risk_level || null) : null,
+    ai_raw_output: result,
+    summary: isFailed(status) ? null : (result.summary || null),
+    carrier: result.carrier || null,
+    policy_number: result.policy_number || null,
+    effective_date: result.effective_date || null,
+    expiration_date: result.expiration_date || null,
+    policy_type: (isAnalysed(status) && resolveDetectedType(result.policy_type)) || fallbackType,
+    validation_status: 'PENDING',
+  };
+}
 
 const genId = () => Math.random().toString(36).substr(2, 9);
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -473,6 +530,22 @@ const S = {
   btnSm: { background: GOLD, color: WHITE, border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
   btnOut: { background: 'transparent', color: WHITE, border: '1px solid rgba(255,255,255,0.3)', borderRadius: 8, padding: '10px 24px', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
   btnGreen: { background: GREEN, color: WHITE, border: 'none', borderRadius: 8, padding: '12px 28px', fontSize: 15, fontWeight: 600, cursor: 'pointer' },
+  // Buttons that sit on a light card. btnOut above is white-on-transparent for
+  // the navy header bar; on a light background it renders white text on
+  // near-white and is effectively invisible. Disabled is grey-on-grey with a
+  // not-allowed cursor -- visibly unavailable, rather than an enabled-looking
+  // button dimmed by opacity, which reads as a rendering glitch.
+  actionBtn: (disabled, opts = {}) => ({
+    background: disabled ? '#F3F4F6' : (opts.primary ? NAVY : WHITE),
+    color: disabled ? '#9CA3AF' : (opts.primary ? WHITE : NAVY),
+    border: '1px solid ' + (disabled ? LIGHT_GRAY : NAVY),
+    borderRadius: 6,
+    padding: opts.small ? '6px 12px' : '9px 18px',
+    fontSize: opts.small ? 12 : 13,
+    fontWeight: 600,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    whiteSpace: 'nowrap',
+  }),
   btnRed: { background: 'transparent', color: RED, border: '1px solid ' + RED, borderRadius: 6, padding: '6px 14px', fontSize: 12, cursor: 'pointer' },
   btnGhost: { background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: 12 },
   input: { width: '100%', padding: '12px 16px', border: '1px solid ' + LIGHT_GRAY, borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box' },
@@ -531,12 +604,34 @@ export default function App() {
   const [fActions, setFActions] = useState({});
   const [fNotes, setFNotes] = useState({});
   const [clientLink, setClientLink] = useState('');
+  const [expandedPolicies, setExpandedPolicies] = useState(new Set());
+  const [rowBusy, setRowBusy] = useState(null);   // policy id, or 'new'
+  const [rowErr, setRowErr] = useState('');
+  const [addType, setAddType] = useState('detect');
+  const replaceRef = useRef(null);
+  const addRef = useRef(null);
+  const replaceTarget = useRef(null);
+  const [progReport, setProgReport] = useState(null);
+  const [progLoading, setProgLoading] = useState(false);
+  const [progErr, setProgErr] = useState('');
 
   useEffect(() => { if (authed) loadAudits(); }, [authed]);
 
   const loadAudits = async () => {
     const data = await adminJson(adminPw, { action: 'select', table: 'audits', filter: { deleted_at: null }, order: 'created_at.desc' });
     setAudits(Array.isArray(data) ? data : []);
+  };
+
+  // A generated report is stored, so re-opening the audit should show it rather
+  // than making the operator pay to generate it again.
+  const loadProgramReport = async (auditId) => {
+    const rows = await adminJson(adminPw, {
+      action: 'select', table: 'audit_program_analysis',
+      filter: { audit_id: auditId }, order: 'generated_at.desc', limit: 1,
+    });
+    const row = Array.isArray(rows) ? rows[0] : null;
+    setProgReport(row?.result || null);
+    setProgErr('');
   };
 
   const loadPolicies = async (id) => {
@@ -570,6 +665,7 @@ export default function App() {
       (out?.findings || []).forEach((_, fi) => { a[`${pi}-${fi}`] = p.validation_status === 'VALIDATED' ? 'CONFIRMED' : ''; n[`${pi}-${fi}`] = ''; });
     });
     setFActions(a); setFNotes(n); setValName(''); setError('');
+    await loadProgramReport(audit.id);
     setScreen('report');
   };
 
@@ -609,21 +705,8 @@ export default function App() {
       setProgress({ c: i + 1, t: files.length, l: lbl });
       setLoadMsg('Analyzing ' + lbl + '...');
 
-      let result;
-      try {
-        const b64 = await fileToBase64(f.file);
-        const resp = await fetch('/api/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
-          body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
-            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-            { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + lbl + ' policy for ' + clientName + ' (Industry: ' + clientInd + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
-          ] }] }),
-        });
-        if (!resp.ok) throw new Error(await describeFailure(resp));
-        const data = await resp.json();
-        const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
-        result = JSON.parse(txt.replace(/```json|```/g, '').trim());
-      } catch (e) { result = { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } }; }
+      const b64 = await fileToBase64(f.file);
+      const result = await analyzePdf(adminPw, { b64, label: lbl, clientName, clientIndustry: clientInd });
 
       // A missing status means the run did not produce one, which is a failure.
       // It used to default to UNKNOWN -- a real verdict -- so a broken run was
@@ -651,6 +734,7 @@ export default function App() {
     await loadAudits();
     const pols = await loadPolicies(audit.id);
     setCurAudit(audit); setCurPolicies(pols);
+    setProgReport(null); setProgErr('');
     setLoading(false); setScreen('report');
     setClientName(''); setClientInd(''); setClientContact(''); setClientEmail('');
     setConsentOk(false); setSignerName(''); setSignerTitle(''); setFiles([]);
@@ -663,6 +747,136 @@ export default function App() {
   // while any of these are in it: the findings, the coverage gaps and the
   // overall risk would all be drawn from a document nobody actually read.
   const unanalysedPolicies = () => curPolicies.filter(p => !isAnalysed(p.ai_status));
+
+  // --- acting on a single policy row, in place -----------------------------
+  //
+  // A failed row keeps its identity: same audit, same row, same position in the
+  // report. Replacing the file or re-running it updates that row rather than
+  // adding a second one, so the audit does not accumulate a fossil per attempt.
+
+  const refreshAfterPolicyChange = async (auditId) => {
+    const pols = await loadPolicies(auditId);
+    setCurPolicies(pols);
+    const risk = calcRisk(pols.map(p => p.ai_status));
+    await adminApi(adminPw, { action: 'update', table: 'audits', filter: { id: auditId }, payload: { overall_risk: risk, file_count: pols.length } });
+    setCurAudit(prev => prev ? { ...prev, overall_risk: risk, file_count: pols.length } : prev);
+    // The stored program report described the previous set of policies.
+    setProgReport(null);
+    await loadAudits();
+    return pols;
+  };
+
+  const runOnePolicy = async (pol, { b64, fileName, fileSize, typeId }) => {
+    const label = POLICY_TYPES.find(p => p.id === (typeId || pol.policy_type))?.label || pol.policy_type;
+    setRowBusy(pol.id); setRowErr('');
+    try {
+      const result = await analyzePdf(adminPw, {
+        b64, label,
+        clientName: curAudit.client_name, clientIndustry: curAudit.client_industry,
+      });
+      const payload = {
+        ...analysisColumns(result, typeId || pol.policy_type),
+        ...(fileName ? { file_name: fileName, file_size_bytes: fileSize } : {}),
+      };
+      const upd = await adminApi(adminPw, { action: 'update', table: 'audit_policies', filter: { id: pol.id }, payload });
+      if (!upd.ok) { setRowErr('Analysis finished but the result could not be saved.'); return; }
+      await logActivity(adminPw, curAudit.id, fileName ? 'POLICY_FILE_REPLACED' : 'POLICY_RERUN',
+        { file: fileName || pol.file_name, status: payload.ai_status, ...(isFailed(payload.ai_status) ? { failure: result.failure?.message } : {}) }, 'operator');
+      await refreshAfterPolicyChange(curAudit.id);
+      if (isFailed(payload.ai_status)) setRowErr(`${fileName || pol.file_name}: ${failureReason({ ai_raw_output: result })}`);
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  // Replace the document in an existing row, then analyse it.
+  const replaceFile = async (pol, file) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) { setRowErr('Only PDF files can be analysed.'); return; }
+    if (file.size > MAX_PDF_BYTES) {
+      setRowErr(`${file.name} is ${mb(file.size)} MB. The limit is ${mb(MAX_PDF_BYTES)} MB, because the file is encoded into the request and the platform caps that at 4.5 MB. Compress it, or split it.`);
+      return;
+    }
+    const b64 = await fileToBase64(file);
+    await runOnePolicy(pol, { b64, fileName: file.name, fileSize: file.size, typeId: pol.policy_type });
+  };
+
+  // Re-run the document already held for this row. Only possible when the file
+  // was stored -- admin uploads stream straight to the API and keep nothing, so
+  // for those rows the document no longer exists and Replace is the only route.
+  const rerunPolicy = async (pol) => {
+    if (!pol.storage_path) { setRowErr('This document was not stored, so it cannot be re-run. Use Replace file.'); return; }
+    setRowBusy(pol.id); setRowErr('');
+    try {
+      const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
+      const dlJson = dl.ok ? await dl.json().catch(() => null) : null;
+      if (!dlJson?.base64) { setRowErr('Could not retrieve the stored document.'); return; }
+      setRowBusy(null);
+      await runOnePolicy(pol, { b64: dlJson.base64 });
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  // A late document joins the audit as a new row.
+  const addPolicy = async (file, typeId) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) { setRowErr('Only PDF files can be analysed.'); return; }
+    if (file.size > MAX_PDF_BYTES) {
+      setRowErr(`${file.name} is ${mb(file.size)} MB. The limit is ${mb(MAX_PDF_BYTES)} MB. Compress it, or split it.`);
+      return;
+    }
+    setRowBusy('new'); setRowErr('');
+    try {
+      const b64 = await fileToBase64(file);
+      const label = POLICY_TYPES.find(p => p.id === typeId)?.label || typeId;
+      const result = await analyzePdf(adminPw, { b64, label, clientName: curAudit.client_name, clientIndustry: curAudit.client_industry });
+      const ins = await adminApi(adminPw, { action: 'insert', table: 'audit_policies', payload: {
+        audit_id: curAudit.id, file_name: file.name, file_size_bytes: file.size,
+        ...analysisColumns(result, typeId),
+      }});
+      if (!ins.ok) { setRowErr('Analysis finished but the new policy could not be saved.'); return; }
+      await logActivity(adminPw, curAudit.id, 'POLICY_ADDED', { file: file.name, type: label, status: result.ai_status || 'FAILED' }, 'operator');
+      await refreshAfterPolicyChange(curAudit.id);
+      if (isFailed(result.ai_status || 'FAILED')) setRowErr(`${file.name}: ${failureReason({ ai_raw_output: result })}`);
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  // The program-level pass: the only place an absence can honestly be asserted,
+  // because it is the only one that sees every policy at once. The server
+  // enforces the same "every policy must have been read" rule -- this button
+  // is a convenience, not the control.
+  const generateProgramReport = async () => {
+    if (unanalysedPolicies().length || !curPolicies.length) return;
+    setProgErr(''); setProgLoading(true);
+    try {
+      const resp = await fetch('/api/admin/program-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
+        body: JSON.stringify({ audit_id: curAudit.id, generated_by: valName || 'operator', today: todayISO().slice(0, 10) }),
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        // 409 is the guard refusing, and it names the documents it could not
+        // read. That is an answer, not a malfunction -- show it as one.
+        if (resp.status === 409 && data?.unread_policies) {
+          setProgErr(`${data.reason} Unread: ${data.unread_policies.map(u => u.file_name).join(', ')}`);
+        } else {
+          setProgErr(data?.error ? `${data.error}${data.upstream_status ? ` (upstream ${data.upstream_status})` : ''}` : `Request failed (HTTP ${resp.status})`);
+        }
+        return;
+      }
+      setProgReport(data.result);
+      if (data.stored === false) setProgErr('Report generated but could not be saved: ' + (data.store_error || 'unknown'));
+      await logActivity(adminPw, curAudit.id, 'PROGRAM_REPORT_GENERATED', { policies: data.policies_included?.length ?? 0 }, valName || 'operator');
+    } catch (e) {
+      setProgErr('Network error: ' + e.message);
+    } finally {
+      setProgLoading(false);
+    }
+  };
 
   const allReviewed = () => {
     for (let pi = 0; pi < curPolicies.length; pi++) {
@@ -757,24 +971,13 @@ export default function App() {
       setLoadMsg('Analyzing ' + lbl + '...');
 
       let result;
-      try {
-        const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
-        if (!dl.ok) throw new Error('Could not download file');
-        const dlJson = await dl.json();
-        const b64 = dlJson.base64;
-        if (!b64) throw new Error('Could not download file');
-        const resp = await fetch('/api/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
-          body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
-            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-            { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + lbl + ' policy for ' + audit.client_name + ' (Industry: ' + audit.client_industry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
-          ] }] }),
-        });
-        if (!resp.ok) throw new Error(await describeFailure(resp));
-        const data = await resp.json();
-        const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
-        result = JSON.parse(txt.replace(/```json|```/g, '').trim());
-      } catch (e) { result = { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } }; }
+      const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
+      const dlJson = dl.ok ? await dl.json().catch(() => null) : null;
+      if (!dlJson?.base64) {
+        result = { ai_status: 'FAILED', failure: { message: 'The stored document could not be retrieved', at: new Date().toISOString() } };
+      } else {
+        result = await analyzePdf(adminPw, { b64: dlJson.base64, label: lbl, clientName: audit.client_name, clientIndustry: audit.client_industry });
+      }
 
       const status = result.ai_status || 'FAILED';
       statuses.push(status);
@@ -799,6 +1002,9 @@ export default function App() {
     await loadAudits();
     const updatedPols = await loadPolicies(audit.id);
     setCurAudit(audit); setCurPolicies(updatedPols);
+    // A re-run changes what the program report was based on, so the stored one
+    // no longer describes this audit. Clear it rather than show a stale report.
+    setProgReport(null); setProgErr('');
     setLoading(false); setScreen('report');
     const a = {};
     updatedPols.forEach((p, pi) => (p.ai_raw_output?.findings || []).forEach((_, fi) => { a[pi + '-' + fi] = ''; }));
@@ -1032,11 +1238,257 @@ export default function App() {
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: isValid ? GREEN : failed2 ? ORANGE : RED, textAlign: 'right', maxWidth: 320 }}>
                   {outcomeText}
-                  {failed2 && !isPending(st2) && <div style={{ fontSize: 11, fontWeight: 400, color: MID_GRAY, marginTop: 2 }}>Nothing was read from this document. Re-run it before finalizing.</div>}
+                  {failed2 && !isPending(st2) && <div style={{ fontSize: 11, fontWeight: 400, color: MID_GRAY, marginTop: 2 }}>Nothing was read from this document.</div>}
+                  {/* A failed row is actionable in place: same audit, same row,
+                      so the audit does not collect one fossil per attempt.
+                      Re-run appears only when the document was actually stored
+                      -- admin uploads stream straight to the API and keep
+                      nothing, so for those rows the file is gone and Replace is
+                      the only honest option. */}
+                  {failed2 && (
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 6, flexWrap: 'wrap' }}>
+                      <button
+                        style={S.actionBtn(!!rowBusy, { small: true, primary: true })}
+                        disabled={!!rowBusy}
+                        onClick={() => { replaceTarget.current = pol; setRowErr(''); replaceRef.current?.click(); }}>
+                        {rowBusy === pol.id ? 'Working…' : '↑ Replace file'}
+                      </button>
+                      {pol.storage_path ? (
+                        <button
+                          style={S.actionBtn(!!rowBusy, { small: true })}
+                          disabled={!!rowBusy}
+                          onClick={() => rerunPolicy(pol)}>
+                          ↻ Re-run
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 10, fontWeight: 400, color: MID_GRAY, alignSelf: 'center' }} title="Only documents uploaded through a client portal link are stored.">
+                          not stored — cannot re-run
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             );
           })}
+          {/* Hidden inputs driving Replace file and Add policy. */}
+          <input ref={replaceRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
+            onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; const t = replaceTarget.current; replaceTarget.current = null; if (f && t) await replaceFile(t, f); }} />
+          <input ref={addRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
+            onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) await addPolicy(f, addType); }} />
+
+          {rowErr && <div style={{ marginTop: 12, padding: 12, background: '#FEF2F2', borderRadius: 8, color: RED, fontSize: 12, lineHeight: 1.6 }}>{rowErr}</div>}
+
+          {/* A late document joins the existing audit rather than starting a
+              second one for the same client. */}
+          <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: MID_GRAY }}>Document arrived late?</span>
+            <select value={addType} onChange={e => setAddType(e.target.value)} disabled={!!rowBusy}
+              style={{ ...S.input, width: 'auto', padding: '6px 10px', fontSize: 12 }}>
+              {POLICY_TYPES.map(pt => <option key={pt.id} value={pt.id}>{pt.icon} {pt.label}</option>)}
+            </select>
+            <button style={S.actionBtn(!!rowBusy, { small: true })}
+              disabled={!!rowBusy} onClick={() => { setRowErr(''); addRef.current?.click(); }}>
+              {rowBusy === 'new' ? 'Analyzing…' : '+ Add policy'}
+            </button>
+            <span style={{ fontSize: 11, color: MID_GRAY }}>PDF, up to {mb(MAX_PDF_BYTES)} MB</span>
+          </div>
+
+          {/* Program-level report. Deliberately placed after the per-policy
+              list: it is the only view entitled to say a line is absent, and
+              only because every policy above was read. */}
+          <div style={{ marginTop: 16, padding: 16, background: LIGHT_BG, borderRadius: 8, border: '1px solid ' + LIGHT_GRAY }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: NAVY }}>Program Report</div>
+                <div style={{ fontSize: 12, color: MID_GRAY, lineHeight: 1.5 }}>
+                  Reads all {curPolicies.length} polic{curPolicies.length === 1 ? 'y' : 'ies'} together. Only this pass can say a coverage line is genuinely absent — a single policy can only say it was not evidenced in that document.
+                </div>
+              </div>
+              <button
+                style={S.actionBtn(progLoading || unanalysedPolicies().length > 0 || !curPolicies.length, { primary: true })}
+                disabled={progLoading || unanalysedPolicies().length > 0 || !curPolicies.length}
+                onClick={generateProgramReport}>
+                {progLoading ? 'Generating…' : progReport ? '↻ Regenerate' : 'Generate program report'}
+              </button>
+            </div>
+            {unanalysedPolicies().length > 0 && (
+              <div style={{ fontSize: 12, color: ORANGE, marginTop: 8 }}>
+                ⚠️ Unavailable while {unanalysedPolicies().map(p => p.file_name).join(', ')} {unanalysedPolicies().length === 1 ? 'is' : 'are'} unread. A gap report built over a document nobody read would name coverage the client may actually hold.
+              </div>
+            )}
+            {progErr && <div style={{ fontSize: 12, color: RED, marginTop: 8, lineHeight: 1.5 }}>{progErr}</div>}
+            {progReport && (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid ' + LIGHT_GRAY }}>
+
+                {/* Policy table. Every column but limits/deductibles is computed
+                    server-side from the extracted data. */}
+                {progReport.policy_table?.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={S.sec}>Policy Table</div>
+                    {/* Fixed layout with explicit widths, so the table fits the
+                        screen instead of scrolling sideways. Anything that can
+                        overrun is truncated with the full value on hover; the
+                        long forms live in Level 2. */}
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, tableLayout: 'fixed' }}>
+                      <colgroup>
+                        <col style={{ width: '20%' }} /><col style={{ width: '11%' }} /><col style={{ width: '13%' }} />
+                        <col style={{ width: '19%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} />
+                        <col style={{ width: '8%' }} /><col style={{ width: '7%' }} />
+                      </colgroup>
+                      <thead>
+                        <tr style={{ textAlign: 'left', color: MID_GRAY, borderBottom: '1px solid ' + LIGHT_GRAY }}>
+                          {['Line', 'Carrier', 'Policy No.', 'Key Limits', 'Deductible', 'Term', 'Verdict', 'Premium'].map(h => (
+                            <th key={h} style={{ padding: '6px 6px', fontWeight: 700, whiteSpace: 'nowrap', fontSize: 11 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {progReport.policy_table.map((row, i) => {
+                          const ts = row.term_status || {};
+                          const dot = ts.state === 'expired' ? RED : ts.state === 'expiring' ? ORANGE : ts.state === 'in_force' ? GREEN : MID_GRAY;
+                          const clip = { padding: '7px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+                          const none = (t = '—') => <span style={{ color: MID_GRAY }}>{t}</span>;
+                          return (
+                            <tr key={i} style={{ borderBottom: '1px solid ' + LIGHT_GRAY }}>
+                              <td style={{ ...clip, fontWeight: 700, color: NAVY }} title={row.file_name}>{row.line}</td>
+                              <td style={clip} title={row.carrier || ''}>{row.carrier_short || row.carrier || none('—')}</td>
+                              <td style={clip} title={row.policy_number || ''}>{row.policy_number || none()}</td>
+                              <td style={clip} title={row.key_limits || ''}>{row.key_limits || none()}</td>
+                              <td style={clip} title={row.deductibles || ''}>{row.deductibles || none()}</td>
+                              <td style={{ ...clip, fontWeight: 600 }} title={ts.label || ''}>
+                                <span style={{ color: dot, marginRight: 5 }}>●</span>{row.expiration_date || none()}
+                              </td>
+                              <td style={clip} title={row.ai_verdict?.label || ''}>{row.ai_verdict?.short || row.ai_verdict?.status}</td>
+                              <td style={{ ...clip, textAlign: 'right' }} title={row.premium_as_shown || ''}>{row.premium_total || none()}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: 10, color: MID_GRAY, marginTop: 6 }}>
+                      <span style={{ color: GREEN }}>●</span> in force &nbsp;
+                      <span style={{ color: ORANGE }}>●</span> renews within 90 days &nbsp;
+                      <span style={{ color: RED }}>●</span> expired &nbsp;· hover any cell for the full value
+                    </div>
+                  </div>
+                )}
+
+                {/* Limit adequacy: what each layer carries, and whether the
+                    primaries satisfy what sits above them. Its own section
+                    because it is the question the report gets opened for. */}
+                {progReport.limit_adequacy && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={S.sec}>Limit Adequacy</div>
+                    {progReport.limit_adequacy.summary && (
+                      <div style={{ padding: 12, background: '#FFFBEB', border: '1px solid ' + ORANGE, borderRadius: 6, fontSize: 12, color: '#333', lineHeight: 1.6, marginBottom: 10 }}>
+                        {progReport.limit_adequacy.summary}
+                      </div>
+                    )}
+                    {progReport.limit_adequacy.layers?.map((l, i) => (
+                      <div key={i} style={{ marginBottom: 10, padding: 12, background: WHITE, border: '1px solid ' + LIGHT_GRAY, borderRadius: 6 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: NAVY }}>
+                          {l.top_layer_line} sits above{l.policy_number ? ` · ${l.policy_number}` : ''}
+                        </div>
+                        {!l.requirements_extracted && l.note && (
+                          <div style={{ fontSize: 12, color: ORANGE, marginTop: 4, lineHeight: 1.5 }}>{l.note}</div>
+                        )}
+                        {l.rows?.map((r, j) => {
+                          const tone = r.state === 'below_requirement' ? RED : r.state === 'meets_or_exceeds' ? GREEN : MID_GRAY;
+                          const label = r.state === 'below_requirement' ? 'BELOW' : r.state === 'meets_or_exceeds' ? 'MEETS' : 'UNKNOWN';
+                          return (
+                            <div key={j} style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 6, fontSize: 12 }}>
+                              <span style={{ ...S.tag, background: tone === GREEN ? '#F0FDF4' : tone === RED ? '#FEF2F2' : '#F3F4F6', color: tone, minWidth: 74, textAlign: 'center' }}>{label}</span>
+                              <span style={{ flex: 1 }}>{r.line}</span>
+                              <span style={{ color: MID_GRAY }}>
+                                required {r.required ? '$' + r.required.toLocaleString() : '—'} · carried {r.actual ? '$' + r.actual.toLocaleString() : '—'}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                    {progReport.limit_adequacy.carried?.length > 0 && (
+                      <div style={{ padding: 12, background: LIGHT_BG, borderRadius: 6 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Limits Carried</div>
+                        {progReport.limit_adequacy.carried.map((c, i) => (
+                          <div key={i} style={{ display: 'flex', gap: 10, fontSize: 12, marginBottom: 4, lineHeight: 1.5 }}>
+                            <span style={{ minWidth: 150, fontWeight: c.is_top_layer ? 700 : 400, color: c.is_top_layer ? NAVY : '#333' }}>
+                              {c.is_top_layer ? '▲ ' : ''}{c.line}
+                            </span>
+                            <span>{c.key_limits || <span style={{ color: MID_GRAY }}>not extracted</span>}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Program findings: computed first, then the model's synthesis.
+                    The order is the point -- the arithmetic is not an opinion. */}
+                {(progReport.program_findings?.computed?.length > 0 || progReport.program_findings?.synthesis?.length > 0) && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={S.sec}>Program Findings</div>
+                    {progReport.program_findings.computed?.map((f, i) => (
+                      <div key={'c' + i} style={{ padding: 12, background: WHITE, borderRadius: 6, border: '1px solid ' + LIGHT_GRAY, borderLeft: '3px solid ' + NAVY, marginBottom: 6 }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                          <span style={{ ...S.tag, background: '#EEF2FF', color: NAVY }}>COMPUTED</span>
+                          <span style={{ ...S.tag, background: LIGHT_GOLD, color: NAVY }}>{f.type}</span>
+                          <span style={{ ...S.tag, background: f.severity === 'HIGH' ? '#FEE2E2' : f.severity === 'MODERATE' ? '#FEF3C7' : '#F3F4F6', color: f.severity === 'HIGH' ? RED : f.severity === 'MODERATE' ? ORANGE : MID_GRAY }}>{f.severity}</span>
+                        </div>
+                        <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{f.finding}</div>
+                        {f.evidence && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4, lineHeight: 1.5 }}>{f.evidence}</div>}
+                      </div>
+                    ))}
+                    {progReport.program_findings.synthesis?.map((f, i) => (
+                      <div key={'s' + i} style={{ padding: 12, background: WHITE, borderRadius: 6, border: '1px solid ' + LIGHT_GRAY, marginBottom: 6 }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                          <span style={{ ...S.tag, background: f.severity === 'HIGH' ? '#FEE2E2' : f.severity === 'MODERATE' ? '#FEF3C7' : '#F3F4F6', color: f.severity === 'HIGH' ? RED : f.severity === 'MODERATE' ? ORANGE : MID_GRAY }}>{f.severity || 'LOW'}</span>
+                        </div>
+                        <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{f.finding}</div>
+                        {f.evidence && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4, lineHeight: 1.5 }}>{f.evidence}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Coverage position: the four states. */}
+                {progReport.coverage_position?.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={S.sec}>Coverage Position</div>
+                    {progReport.coverage_position.map((l, i) => {
+                      const tone = l.state === 'present' ? GREEN : l.state === 'absent' ? RED : l.state === 'unread' ? ORANGE : MID_GRAY;
+                      const label = l.state === 'present' ? 'PRESENT' : l.state === 'absent' ? 'ABSENT' : l.state === 'unread' ? 'UNREAD' : 'NOT SUPPLIED';
+                      return (
+                        <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 6, fontSize: 13, lineHeight: 1.5, alignItems: 'flex-start' }}>
+                          <span style={{ ...S.tag, background: tone === GREEN ? '#F0FDF4' : tone === RED ? '#FEF2F2' : tone === ORANGE ? '#FFFBEB' : '#F3F4F6', color: tone, minWidth: 112, textAlign: 'center', flexShrink: 0 }}>{label}</span>
+                          <span><strong>{l.line}</strong>
+                            {l.policy && <span style={{ color: MID_GRAY }}> — {l.policy}</span>}
+                            {l.note && <span style={{ color: MID_GRAY }}> — {l.note}</span>}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Internal. Level 3 strips this entirely. */}
+                {progReport.agent_notes && (
+                  <div style={{ padding: 14, background: '#F9FAFB', borderRadius: 8, border: '1px dashed ' + MID_GRAY }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>🔒 Agent Notes — Internal Only, Never Shown To The Client</div>
+                    {progReport.agent_notes.lead_hook && <div style={{ fontSize: 13, color: NAVY, fontWeight: 600, marginBottom: 6, lineHeight: 1.5 }}>{progReport.agent_notes.lead_hook}</div>}
+                    {progReport.agent_notes.primary_opportunity && <div style={{ fontSize: 13, color: '#333', marginBottom: 8, lineHeight: 1.5 }}>{progReport.agent_notes.primary_opportunity}</div>}
+                    {progReport.agent_notes.talking_points?.length > 0 && progReport.agent_notes.talking_points.map((t, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: 12, lineHeight: 1.5 }}><span style={{ color: GOLD }}>•</span><span>{t}</span></div>
+                    ))}
+                    {progReport.agent_notes.urgency?.length > 0 && progReport.agent_notes.urgency.map((u, i) => (
+                      <div key={'u' + i} style={{ fontSize: 12, color: ORANGE, marginTop: 4, lineHeight: 1.5 }}>⏱ {u}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           {/* The "Missing Policy Types" block was removed here. It listed every
               POLICY_TYPES entry not uploaded to this audit and called them
               missing -- so a one-policy audit announced that Commercial Auto
@@ -1048,23 +1500,97 @@ export default function App() {
               supported. (It also hardcoded "All 6 policy types" against a list
               of eleven.) */}
         </div>
+        {/* Five collapsed cards with findings inside them is a lot of clicking,
+            and Finalize is gated on every finding being reviewed. */}
+        {curPolicies.length > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 8 }} className="no-print">
+            <button style={S.actionBtn(false, { small: true })}
+              onClick={() => setExpandedPolicies(new Set(curPolicies.map(p => p.id)))}>Expand all</button>
+            <button style={S.actionBtn(expandedPolicies.size === 0, { small: true })}
+              disabled={expandedPolicies.size === 0}
+              onClick={() => setExpandedPolicies(new Set())}>Collapse all</button>
+          </div>
+        )}
         {curPolicies.map((pol, pi) => {
           const ti = POLICY_TYPES.find(p => p.id === pol.policy_type);
           const out = isDraft ? pol.ai_raw_output : (pol.validated_output || pol.ai_raw_output);
           if (!out) return null;
           const findings = out.findings || [], gaps = out.coverage_gaps || [], recs = out.recommendations || [];
+          // Level 2: collapsed by default. The header has to carry enough for
+          // the operator to know what is inside without opening it -- above all
+          // how many findings still need review, since Finalize is gated on that
+          // and an unopened card would otherwise hide the outstanding work.
+          const open = expandedPolicies.has(pol.id);
+          const reviewed = findings.filter((_, fi) => fActions[pi + '-' + fi]).length;
+          const progRow = progReport?.policy_table?.find(r => r.file_name === pol.file_name);
 
           return (<div key={pol.id} style={S.card}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 8 }}>
+            <div
+              onClick={() => setExpandedPolicies(prev => { const n = new Set(prev); n.has(pol.id) ? n.delete(pol.id) : n.add(pol.id); return n; })}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: open ? 20 : 0, flexWrap: 'wrap', gap: 8, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: 14, color: MID_GRAY, width: 12 }}>{open ? '▾' : '▸'}</span>
                 <span style={{ fontSize: 24 }}>{ti?.icon || '📄'}</span>
                 <div><div style={{ fontSize: 18, fontWeight: 700 }}>{ti?.label || pol.policy_type}</div>
-                <div style={{ fontSize: 12, color: MID_GRAY }}>{pol.file_name}{pol.carrier ? ' • ' + pol.carrier : ''}</div></div>
+                <div style={{ fontSize: 12, color: MID_GRAY }}>{pol.file_name}{pol.carrier ? ' • ' + (progRow?.carrier_short || pol.carrier) : ''}</div></div>
               </div>
-              <div style={S.badge(pol.risk_level || pol.ai_status)}>
-                {pol.ai_status === 'EXCLUDED' ? '⛔ AI EXCLUDED' : pol.ai_status === 'SILENT' ? '⚠️ SILENT' : pol.ai_status === 'PARTIAL' ? '🔶 PARTIAL' : pol.ai_status === 'AFFIRMATIVE' ? '✅ COVERED' : pol.ai_status === 'ERROR' ? '❌ ERROR' : '❓ UNKNOWN'}
+              {!open && findings.length > 0 && (
+                <div style={{ fontSize: 12, color: reviewed === findings.length ? GREEN : ORANGE, fontWeight: 600 }}>
+                  {findings.length} finding{findings.length === 1 ? '' : 's'} · {reviewed}/{findings.length} reviewed
+                </div>
+              )}
+              {/* This badge had a case for ERROR but none for FAILED, so once
+                  migration 03 renamed the status every failed policy fell
+                  through to "UNKNOWN" -- the verdict meaning "read, and not an
+                  insurance policy". The status list at the top of the report was
+                  fixed; this badge deeper in the body was missed, so the same
+                  document was described two different ways on one screen. It now
+                  uses the shared helpers, so it cannot drift again. */}
+              <div style={S.badge(isFailed(pol.ai_status) ? 'MODERATE' : (pol.risk_level || pol.ai_status))}>
+                {isFailed(pol.ai_status) ? '⚠️ ANALYSIS FAILED'
+                  : isPending(pol.ai_status) ? '⏳ NOT ANALYSED'
+                  : pol.ai_status === 'EXCLUDED' ? '⛔ AI EXCLUDED'
+                  : pol.ai_status === 'SILENT' ? '⚠️ SILENT'
+                  : pol.ai_status === 'PARTIAL' ? '🔶 PARTIAL'
+                  : pol.ai_status === 'AFFIRMATIVE' ? '✅ COVERED'
+                  : '❓ NOT A POLICY'}
               </div>
             </div>
+
+            {!open ? null : <>
+
+            {/* The long forms the table deliberately shortened. The table shows
+                "Hanover" and "$4,976"; this is where the full legal entity and
+                the premium line exactly as printed belong. */}
+            <div style={{ padding: 14, background: LIGHT_BG, borderRadius: 8, marginBottom: 16, fontSize: 12, lineHeight: 1.7 }}>
+              {pol.carrier && <div><span style={{ color: MID_GRAY }}>Carrier: </span><strong style={{ color: NAVY }}>{pol.carrier}</strong></div>}
+              {pol.policy_number && <div><span style={{ color: MID_GRAY }}>Policy number: </span>{pol.policy_number}</div>}
+              {(pol.effective_date || pol.expiration_date) && (
+                <div><span style={{ color: MID_GRAY }}>Term: </span>{pol.effective_date || '?'} to {pol.expiration_date || '?'}
+                  {progRow?.term_status?.label && <span style={{ color: MID_GRAY }}> — {progRow.term_status.label}</span>}</div>
+              )}
+              {progRow?.key_limits_all?.length > 0 && (
+                <div><span style={{ color: MID_GRAY }}>Limits: </span>{progRow.key_limits_all.join(' · ')}</div>
+              )}
+              {progRow?.deductibles && <div><span style={{ color: MID_GRAY }}>Deductible: </span>{progRow.deductibles}</div>}
+              {out.agent_opportunities?.premium_as_shown && (
+                <div><span style={{ color: MID_GRAY }}>Premium, as printed on the document: </span>{out.agent_opportunities.premium_as_shown}</div>
+              )}
+              {pol.ai_status && <div><span style={{ color: MID_GRAY }}>Verdict: </span>{progRow?.ai_verdict?.label || pol.ai_status}</div>}
+            </div>
+
+            {/* A failed policy has no findings, gaps or recommendations to show,
+                so the card below would render as a policy with nothing wrong
+                with it. Say what actually happened instead. */}
+            {isFailed(pol.ai_status) && (
+              <div style={{ padding: 16, background: '#FFFBEB', borderRadius: 8, border: '1px solid ' + ORANGE, marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: ORANGE, marginBottom: 6 }}>This document was not analysed</div>
+                <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6 }}>{failureReason(pol)}</div>
+                <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 8, lineHeight: 1.6 }}>
+                  Nothing below is derived from this document, and its absence from the findings is not evidence that it contains none. Re-run it before finalizing, or remove it from the audit.
+                </div>
+              </div>
+            )}
 
             {out.summary && <div style={{ padding: 16, background: LIGHT_GOLD, borderRadius: 8, fontSize: 14, lineHeight: 1.7, marginBottom: 16, borderLeft: '3px solid ' + GOLD }}>{out.summary}</div>}
 
@@ -1176,6 +1702,7 @@ export default function App() {
                 )}
               </div>
             )}
+            </>}
           </div>);
         })}
 
@@ -1209,7 +1736,14 @@ export default function App() {
             The AI Insurance Group works with Lloyd's, Munich Re, and specialty AI liability markets to place affirmative coverage.
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }} className="no-print">
-            {!isDraft && <button style={S.btn} onClick={() => { logActivity(adminPw, a.id, 'REPORT_EXPORTED', {}, valName || 'operator'); window.print(); }}>Print / Save as PDF</button>}
+            {/* Collapsed cards are not rendered at all, so printing without
+                expanding them first would silently produce a report missing
+                every policy's detail. Expand, let React paint, then print. */}
+            {!isDraft && <button style={S.btn} onClick={() => {
+              logActivity(adminPw, a.id, 'REPORT_EXPORTED', {}, valName || 'operator');
+              setExpandedPolicies(new Set(curPolicies.map(p => p.id)));
+              setTimeout(() => window.print(), 150);
+            }}>Print / Save as PDF</button>}
             <button style={S.btnOut} onClick={async () => { await loadLog(a.id); setScreen('activity-log'); }}>Activity Log</button>
           </div>
         </div>

@@ -49,7 +49,8 @@ const MAX_SIGNER_TITLE = 100;
 // client's inbox keep working -- it is NOT an automobile policy.
 const POLICY_TYPE_IDS = new Set([
   "detect", "auto", "gl", "eo", "do", "cyber", "epli",
-  "products", "wc", "auto_policy", "property", "umbrella",
+  "products", "wc", "auto_policy", "excess_auto", "auto_physical_damage",
+  "property", "umbrella",
 ]);
 
 // The authoritative consent text. Recorded on submit regardless of what the
