@@ -252,6 +252,55 @@ const todayISO = () => {
   return `${d.toISOString().slice(0, 10)} (${d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })})`;
 };
 
+// The largest PDF that can reach the analysis endpoint. The file is base64
+// encoded into the request body, which adds about a third, and the server caps
+// that body at 4MB (Vercel rejects anything over 4.5MB before our code runs).
+// Checked here as well as on the server so the operator is told immediately,
+// by a message naming the actual file, rather than after a wasted upload.
+// Branch 3 removes this ceiling by reading the PDF from storage server-side.
+const MAX_PDF_BYTES = 2.9 * 1024 * 1024;
+const mb = (bytes) => (bytes / 1048576).toFixed(1);
+
+// One analysis call. Extracted because there were two near-identical copies of
+// this and replace/re-run/add would have made five; a fix applied to four of
+// five copies is how the "|| 'UNKNOWN'" bug survived as long as it did.
+async function analyzePdf(password, { b64, label, clientName, clientIndustry }) {
+  try {
+    const resp = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': password },
+      body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
+        { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + label + ' policy for ' + clientName + ' (Industry: ' + clientIndustry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
+      ] }] }),
+    });
+    if (!resp.ok) throw new Error(await describeFailure(resp));
+    const data = await resp.json();
+    const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
+    return JSON.parse(txt.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    return { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } };
+  }
+}
+
+// The columns an analysis writes, so replace / re-run / add all record a result
+// the same way and a failed row never keeps stale values from a previous run.
+function analysisColumns(result, fallbackType) {
+  const status = result.ai_status || 'FAILED';
+  return {
+    ai_status: status,
+    risk_level: isVerdict(status) ? (result.risk_level || null) : null,
+    ai_raw_output: result,
+    summary: isFailed(status) ? null : (result.summary || null),
+    carrier: result.carrier || null,
+    policy_number: result.policy_number || null,
+    effective_date: result.effective_date || null,
+    expiration_date: result.expiration_date || null,
+    policy_type: (isAnalysed(status) && resolveDetectedType(result.policy_type)) || fallbackType,
+    validation_status: 'PENDING',
+  };
+}
+
 const genId = () => Math.random().toString(36).substr(2, 9);
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 const fmtDateTime = (iso) => new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -539,6 +588,12 @@ export default function App() {
   const [fActions, setFActions] = useState({});
   const [fNotes, setFNotes] = useState({});
   const [clientLink, setClientLink] = useState('');
+  const [rowBusy, setRowBusy] = useState(null);   // policy id, or 'new'
+  const [rowErr, setRowErr] = useState('');
+  const [addType, setAddType] = useState('detect');
+  const replaceRef = useRef(null);
+  const addRef = useRef(null);
+  const replaceTarget = useRef(null);
   const [progReport, setProgReport] = useState(null);
   const [progLoading, setProgLoading] = useState(false);
   const [progErr, setProgErr] = useState('');
@@ -633,21 +688,8 @@ export default function App() {
       setProgress({ c: i + 1, t: files.length, l: lbl });
       setLoadMsg('Analyzing ' + lbl + '...');
 
-      let result;
-      try {
-        const b64 = await fileToBase64(f.file);
-        const resp = await fetch('/api/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
-          body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
-            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-            { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + lbl + ' policy for ' + clientName + ' (Industry: ' + clientInd + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
-          ] }] }),
-        });
-        if (!resp.ok) throw new Error(await describeFailure(resp));
-        const data = await resp.json();
-        const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
-        result = JSON.parse(txt.replace(/```json|```/g, '').trim());
-      } catch (e) { result = { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } }; }
+      const b64 = await fileToBase64(f.file);
+      const result = await analyzePdf(adminPw, { b64, label: lbl, clientName, clientIndustry: clientInd });
 
       // A missing status means the run did not produce one, which is a failure.
       // It used to default to UNKNOWN -- a real verdict -- so a broken run was
@@ -688,6 +730,102 @@ export default function App() {
   // while any of these are in it: the findings, the coverage gaps and the
   // overall risk would all be drawn from a document nobody actually read.
   const unanalysedPolicies = () => curPolicies.filter(p => !isAnalysed(p.ai_status));
+
+  // --- acting on a single policy row, in place -----------------------------
+  //
+  // A failed row keeps its identity: same audit, same row, same position in the
+  // report. Replacing the file or re-running it updates that row rather than
+  // adding a second one, so the audit does not accumulate a fossil per attempt.
+
+  const refreshAfterPolicyChange = async (auditId) => {
+    const pols = await loadPolicies(auditId);
+    setCurPolicies(pols);
+    const risk = calcRisk(pols.map(p => p.ai_status));
+    await adminApi(adminPw, { action: 'update', table: 'audits', filter: { id: auditId }, payload: { overall_risk: risk, file_count: pols.length } });
+    setCurAudit(prev => prev ? { ...prev, overall_risk: risk, file_count: pols.length } : prev);
+    // The stored program report described the previous set of policies.
+    setProgReport(null);
+    await loadAudits();
+    return pols;
+  };
+
+  const runOnePolicy = async (pol, { b64, fileName, fileSize, typeId }) => {
+    const label = POLICY_TYPES.find(p => p.id === (typeId || pol.policy_type))?.label || pol.policy_type;
+    setRowBusy(pol.id); setRowErr('');
+    try {
+      const result = await analyzePdf(adminPw, {
+        b64, label,
+        clientName: curAudit.client_name, clientIndustry: curAudit.client_industry,
+      });
+      const payload = {
+        ...analysisColumns(result, typeId || pol.policy_type),
+        ...(fileName ? { file_name: fileName, file_size_bytes: fileSize } : {}),
+      };
+      const upd = await adminApi(adminPw, { action: 'update', table: 'audit_policies', filter: { id: pol.id }, payload });
+      if (!upd.ok) { setRowErr('Analysis finished but the result could not be saved.'); return; }
+      await logActivity(adminPw, curAudit.id, fileName ? 'POLICY_FILE_REPLACED' : 'POLICY_RERUN',
+        { file: fileName || pol.file_name, status: payload.ai_status, ...(isFailed(payload.ai_status) ? { failure: result.failure?.message } : {}) }, 'operator');
+      await refreshAfterPolicyChange(curAudit.id);
+      if (isFailed(payload.ai_status)) setRowErr(`${fileName || pol.file_name}: ${failureReason({ ai_raw_output: result })}`);
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  // Replace the document in an existing row, then analyse it.
+  const replaceFile = async (pol, file) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) { setRowErr('Only PDF files can be analysed.'); return; }
+    if (file.size > MAX_PDF_BYTES) {
+      setRowErr(`${file.name} is ${mb(file.size)} MB. The limit is ${mb(MAX_PDF_BYTES)} MB, because the file is encoded into the request and the platform caps that at 4.5 MB. Compress it, or split it.`);
+      return;
+    }
+    const b64 = await fileToBase64(file);
+    await runOnePolicy(pol, { b64, fileName: file.name, fileSize: file.size, typeId: pol.policy_type });
+  };
+
+  // Re-run the document already held for this row. Only possible when the file
+  // was stored -- admin uploads stream straight to the API and keep nothing, so
+  // for those rows the document no longer exists and Replace is the only route.
+  const rerunPolicy = async (pol) => {
+    if (!pol.storage_path) { setRowErr('This document was not stored, so it cannot be re-run. Use Replace file.'); return; }
+    setRowBusy(pol.id); setRowErr('');
+    try {
+      const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
+      const dlJson = dl.ok ? await dl.json().catch(() => null) : null;
+      if (!dlJson?.base64) { setRowErr('Could not retrieve the stored document.'); return; }
+      setRowBusy(null);
+      await runOnePolicy(pol, { b64: dlJson.base64 });
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  // A late document joins the audit as a new row.
+  const addPolicy = async (file, typeId) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) { setRowErr('Only PDF files can be analysed.'); return; }
+    if (file.size > MAX_PDF_BYTES) {
+      setRowErr(`${file.name} is ${mb(file.size)} MB. The limit is ${mb(MAX_PDF_BYTES)} MB. Compress it, or split it.`);
+      return;
+    }
+    setRowBusy('new'); setRowErr('');
+    try {
+      const b64 = await fileToBase64(file);
+      const label = POLICY_TYPES.find(p => p.id === typeId)?.label || typeId;
+      const result = await analyzePdf(adminPw, { b64, label, clientName: curAudit.client_name, clientIndustry: curAudit.client_industry });
+      const ins = await adminApi(adminPw, { action: 'insert', table: 'audit_policies', payload: {
+        audit_id: curAudit.id, file_name: file.name, file_size_bytes: file.size,
+        ...analysisColumns(result, typeId),
+      }});
+      if (!ins.ok) { setRowErr('Analysis finished but the new policy could not be saved.'); return; }
+      await logActivity(adminPw, curAudit.id, 'POLICY_ADDED', { file: file.name, type: label, status: result.ai_status || 'FAILED' }, 'operator');
+      await refreshAfterPolicyChange(curAudit.id);
+      if (isFailed(result.ai_status || 'FAILED')) setRowErr(`${file.name}: ${failureReason({ ai_raw_output: result })}`);
+    } finally {
+      setRowBusy(null);
+    }
+  };
 
   // The program-level pass: the only place an absence can honestly be asserted,
   // because it is the only one that sees every policy at once. The server
@@ -816,24 +954,13 @@ export default function App() {
       setLoadMsg('Analyzing ' + lbl + '...');
 
       let result;
-      try {
-        const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
-        if (!dl.ok) throw new Error('Could not download file');
-        const dlJson = await dl.json();
-        const b64 = dlJson.base64;
-        if (!b64) throw new Error('Could not download file');
-        const resp = await fetch('/api/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
-          body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
-            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-            { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + lbl + ' policy for ' + audit.client_name + ' (Industry: ' + audit.client_industry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
-          ] }] }),
-        });
-        if (!resp.ok) throw new Error(await describeFailure(resp));
-        const data = await resp.json();
-        const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
-        result = JSON.parse(txt.replace(/```json|```/g, '').trim());
-      } catch (e) { result = { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } }; }
+      const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
+      const dlJson = dl.ok ? await dl.json().catch(() => null) : null;
+      if (!dlJson?.base64) {
+        result = { ai_status: 'FAILED', failure: { message: 'The stored document could not be retrieved', at: new Date().toISOString() } };
+      } else {
+        result = await analyzePdf(adminPw, { b64: dlJson.base64, label: lbl, clientName: audit.client_name, clientIndustry: audit.client_industry });
+      }
 
       const status = result.ai_status || 'FAILED';
       statuses.push(status);
@@ -1094,11 +1221,62 @@ export default function App() {
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: isValid ? GREEN : failed2 ? ORANGE : RED, textAlign: 'right', maxWidth: 320 }}>
                   {outcomeText}
-                  {failed2 && !isPending(st2) && <div style={{ fontSize: 11, fontWeight: 400, color: MID_GRAY, marginTop: 2 }}>Nothing was read from this document. Re-run it before finalizing.</div>}
+                  {failed2 && !isPending(st2) && <div style={{ fontSize: 11, fontWeight: 400, color: MID_GRAY, marginTop: 2 }}>Nothing was read from this document.</div>}
+                  {/* A failed row is actionable in place: same audit, same row,
+                      so the audit does not collect one fossil per attempt.
+                      Re-run appears only when the document was actually stored
+                      -- admin uploads stream straight to the API and keep
+                      nothing, so for those rows the file is gone and Replace is
+                      the only honest option. */}
+                  {failed2 && (
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 6, flexWrap: 'wrap' }}>
+                      <button
+                        style={{ ...S.btnOut, padding: '4px 10px', fontSize: 11, opacity: rowBusy ? 0.4 : 1 }}
+                        disabled={!!rowBusy}
+                        onClick={() => { replaceTarget.current = pol; setRowErr(''); replaceRef.current?.click(); }}>
+                        {rowBusy === pol.id ? 'Working…' : '↑ Replace file'}
+                      </button>
+                      {pol.storage_path ? (
+                        <button
+                          style={{ ...S.btnOut, padding: '4px 10px', fontSize: 11, opacity: rowBusy ? 0.4 : 1 }}
+                          disabled={!!rowBusy}
+                          onClick={() => rerunPolicy(pol)}>
+                          ↻ Re-run
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 10, fontWeight: 400, color: MID_GRAY, alignSelf: 'center' }} title="Only documents uploaded through a client portal link are stored.">
+                          not stored — cannot re-run
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             );
           })}
+          {/* Hidden inputs driving Replace file and Add policy. */}
+          <input ref={replaceRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
+            onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; const t = replaceTarget.current; replaceTarget.current = null; if (f && t) await replaceFile(t, f); }} />
+          <input ref={addRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }}
+            onChange={async e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) await addPolicy(f, addType); }} />
+
+          {rowErr && <div style={{ marginTop: 12, padding: 12, background: '#FEF2F2', borderRadius: 8, color: RED, fontSize: 12, lineHeight: 1.6 }}>{rowErr}</div>}
+
+          {/* A late document joins the existing audit rather than starting a
+              second one for the same client. */}
+          <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: MID_GRAY }}>Document arrived late?</span>
+            <select value={addType} onChange={e => setAddType(e.target.value)} disabled={!!rowBusy}
+              style={{ ...S.input, width: 'auto', padding: '6px 10px', fontSize: 12 }}>
+              {POLICY_TYPES.map(pt => <option key={pt.id} value={pt.id}>{pt.icon} {pt.label}</option>)}
+            </select>
+            <button style={{ ...S.btnOut, padding: '6px 12px', fontSize: 12, opacity: rowBusy ? 0.4 : 1 }}
+              disabled={!!rowBusy} onClick={() => { setRowErr(''); addRef.current?.click(); }}>
+              {rowBusy === 'new' ? 'Analyzing…' : '+ Add policy'}
+            </button>
+            <span style={{ fontSize: 11, color: MID_GRAY }}>PDF, up to {mb(MAX_PDF_BYTES)} MB</span>
+          </div>
+
           {/* Program-level report. Deliberately placed after the per-policy
               list: it is the only view entitled to say a line is absent, and
               only because every policy above was read. */}
