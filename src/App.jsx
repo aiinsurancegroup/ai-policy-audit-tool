@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabase';
+import { unreviewedCount, bulkConfirmPatch } from './reviewActions';
 
 const NAVY = '#1A2B45', GOLD = '#B8972A', DARK_BG = '#0F1923', LIGHT_BG = '#F8F6F1';
 const WHITE = '#FFFFFF', LIGHT_GOLD = '#F5EFE0', MID_GRAY = '#6B7280', LIGHT_GRAY = '#E5E7EB';
@@ -1024,6 +1025,25 @@ export default function App() {
     }
   };
 
+  // Bulk confirm. Only fills in findings that are still UNREVIEWED, so an
+  // earlier Reject or Modify is never silently overwritten by a later bulk
+  // click. Nothing is written to the database here -- it sets exactly the same
+  // local state the per-finding buttons set -- so every finding can still be
+  // changed individually afterwards, and a misclick costs nothing until
+  // Validate & Finalize writes the trail.
+  const unreviewedIn = (policyIndex) => unreviewedCount(curPolicies, fActions, policyIndex);
+
+  const confirmAll = async (policyIndex) => {
+    const { patch, count, perFile } = bulkConfirmPatch(curPolicies, fActions, policyIndex);
+    if (!count) return;
+    setFActions(prev => ({ ...prev, ...patch }));
+    // One entry, not one per finding, and a distinct action name: the trail
+    // should show that these were accepted in bulk rather than read one by one.
+    await logActivity(adminPw, curAudit.id, 'FINDINGS_BULK_CONFIRMED',
+      { scope: policyIndex === undefined ? 'whole audit' : 'single policy', findings_confirmed: count, policies: perFile },
+      valName || 'operator');
+  };
+
   const allReviewed = () => {
     for (let pi = 0; pi < curPolicies.length; pi++) {
       const findings = curPolicies[pi].ai_raw_output?.findings || [];
@@ -1749,7 +1769,14 @@ export default function App() {
             {out.summary && <div style={{ padding: 16, background: LIGHT_GOLD, borderRadius: 8, fontSize: 14, lineHeight: 1.7, marginBottom: 16, borderLeft: '3px solid ' + GOLD }}>{out.summary}</div>}
 
             {findings.length > 0 && <div style={{ marginBottom: 16 }}>
-              <div style={S.sec}>Findings {isDraft && <span style={{ fontWeight: 400, fontSize: 11, color: MID_GRAY }}>— Review each</span>}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                <div style={S.sec}>Findings {isDraft && <span style={{ fontWeight: 400, fontSize: 11, color: MID_GRAY }}>— Review each</span>}</div>
+                {isDraft && unreviewedIn(pi) > 0 && (
+                  <button className="no-print" style={S.actionBtn(false, { small: true })} onClick={() => confirmAll(pi)}>
+                    ✓ Confirm remaining {unreviewedIn(pi)}
+                  </button>
+                )}
+              </div>
               {findings.map((f, fi) => {
                 const k = pi + '-' + fi, act = fActions[k] || '';
                 return (<div key={fi} style={{ padding: 14, background: f.type === 'EXCLUSION' ? '#FEF2F2' : f.type === 'SILENT_GAP' ? '#FFFBEB' : f.type === 'AFFIRMATIVE' ? '#F0FDF4' : '#F9FAFB', borderRadius: 8, marginBottom: 8, borderLeft: '3px solid ' + (f.type === 'EXCLUSION' ? RED : f.type === 'SILENT_GAP' ? ORANGE : f.type === 'AFFIRMATIVE' ? GREEN : LIGHT_GRAY) }}>
@@ -1880,7 +1907,16 @@ export default function App() {
                 A finalized report must not draw findings, gaps or an overall risk rating from a document that was never read. Re-run or remove it first.
               </div>
             )}
-            {!allReviewed() && <div style={{ fontSize: 12, color: ORANGE }}>⚠️ Review all findings above before validating.</div>}
+            {!allReviewed() && (
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, color: ORANGE }}>⚠️ Review all findings above before validating.</div>
+                {unreviewedIn() > 0 && (
+                  <button style={S.actionBtn(false, { small: true })} onClick={() => confirmAll()}>
+                    ✓ Confirm all remaining {unreviewedIn()} across this audit
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
 
