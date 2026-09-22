@@ -531,12 +531,27 @@ export default function App() {
   const [fActions, setFActions] = useState({});
   const [fNotes, setFNotes] = useState({});
   const [clientLink, setClientLink] = useState('');
+  const [progReport, setProgReport] = useState(null);
+  const [progLoading, setProgLoading] = useState(false);
+  const [progErr, setProgErr] = useState('');
 
   useEffect(() => { if (authed) loadAudits(); }, [authed]);
 
   const loadAudits = async () => {
     const data = await adminJson(adminPw, { action: 'select', table: 'audits', filter: { deleted_at: null }, order: 'created_at.desc' });
     setAudits(Array.isArray(data) ? data : []);
+  };
+
+  // A generated report is stored, so re-opening the audit should show it rather
+  // than making the operator pay to generate it again.
+  const loadProgramReport = async (auditId) => {
+    const rows = await adminJson(adminPw, {
+      action: 'select', table: 'audit_program_analysis',
+      filter: { audit_id: auditId }, order: 'generated_at.desc', limit: 1,
+    });
+    const row = Array.isArray(rows) ? rows[0] : null;
+    setProgReport(row?.result || null);
+    setProgErr('');
   };
 
   const loadPolicies = async (id) => {
@@ -570,6 +585,7 @@ export default function App() {
       (out?.findings || []).forEach((_, fi) => { a[`${pi}-${fi}`] = p.validation_status === 'VALIDATED' ? 'CONFIRMED' : ''; n[`${pi}-${fi}`] = ''; });
     });
     setFActions(a); setFNotes(n); setValName(''); setError('');
+    await loadProgramReport(audit.id);
     setScreen('report');
   };
 
@@ -651,6 +667,7 @@ export default function App() {
     await loadAudits();
     const pols = await loadPolicies(audit.id);
     setCurAudit(audit); setCurPolicies(pols);
+    setProgReport(null); setProgErr('');
     setLoading(false); setScreen('report');
     setClientName(''); setClientInd(''); setClientContact(''); setClientEmail('');
     setConsentOk(false); setSignerName(''); setSignerTitle(''); setFiles([]);
@@ -663,6 +680,40 @@ export default function App() {
   // while any of these are in it: the findings, the coverage gaps and the
   // overall risk would all be drawn from a document nobody actually read.
   const unanalysedPolicies = () => curPolicies.filter(p => !isAnalysed(p.ai_status));
+
+  // The program-level pass: the only place an absence can honestly be asserted,
+  // because it is the only one that sees every policy at once. The server
+  // enforces the same "every policy must have been read" rule -- this button
+  // is a convenience, not the control.
+  const generateProgramReport = async () => {
+    if (unanalysedPolicies().length || !curPolicies.length) return;
+    setProgErr(''); setProgLoading(true);
+    try {
+      const resp = await fetch('/api/admin/program-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
+        body: JSON.stringify({ audit_id: curAudit.id, generated_by: valName || 'operator', today: todayISO().slice(0, 10) }),
+      });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        // 409 is the guard refusing, and it names the documents it could not
+        // read. That is an answer, not a malfunction -- show it as one.
+        if (resp.status === 409 && data?.unread_policies) {
+          setProgErr(`${data.reason} Unread: ${data.unread_policies.map(u => u.file_name).join(', ')}`);
+        } else {
+          setProgErr(data?.error ? `${data.error}${data.upstream_status ? ` (upstream ${data.upstream_status})` : ''}` : `Request failed (HTTP ${resp.status})`);
+        }
+        return;
+      }
+      setProgReport(data.result);
+      if (data.stored === false) setProgErr('Report generated but could not be saved: ' + (data.store_error || 'unknown'));
+      await logActivity(adminPw, curAudit.id, 'PROGRAM_REPORT_GENERATED', { policies: data.policies_included?.length ?? 0 }, valName || 'operator');
+    } catch (e) {
+      setProgErr('Network error: ' + e.message);
+    } finally {
+      setProgLoading(false);
+    }
+  };
 
   const allReviewed = () => {
     for (let pi = 0; pi < curPolicies.length; pi++) {
@@ -799,6 +850,9 @@ export default function App() {
     await loadAudits();
     const updatedPols = await loadPolicies(audit.id);
     setCurAudit(audit); setCurPolicies(updatedPols);
+    // A re-run changes what the program report was based on, so the stored one
+    // no longer describes this audit. Clear it rather than show a stale report.
+    setProgReport(null); setProgErr('');
     setLoading(false); setScreen('report');
     const a = {};
     updatedPols.forEach((p, pi) => (p.ai_raw_output?.findings || []).forEach((_, fi) => { a[pi + '-' + fi] = ''; }));
@@ -1037,6 +1091,87 @@ export default function App() {
               </div>
             );
           })}
+          {/* Program-level report. Deliberately placed after the per-policy
+              list: it is the only view entitled to say a line is absent, and
+              only because every policy above was read. */}
+          <div style={{ marginTop: 16, padding: 16, background: LIGHT_BG, borderRadius: 8, border: '1px solid ' + LIGHT_GRAY }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: NAVY }}>Program Report</div>
+                <div style={{ fontSize: 12, color: MID_GRAY, lineHeight: 1.5 }}>
+                  Reads all {curPolicies.length} polic{curPolicies.length === 1 ? 'y' : 'ies'} together. Only this pass can say a coverage line is genuinely absent — a single policy can only say it was not evidenced in that document.
+                </div>
+              </div>
+              <button
+                style={{ ...S.btnOut, opacity: (progLoading || unanalysedPolicies().length > 0 || !curPolicies.length) ? 0.4 : 1 }}
+                disabled={progLoading || unanalysedPolicies().length > 0 || !curPolicies.length}
+                onClick={generateProgramReport}>
+                {progLoading ? 'Generating…' : progReport ? '↻ Regenerate' : 'Generate program report'}
+              </button>
+            </div>
+            {unanalysedPolicies().length > 0 && (
+              <div style={{ fontSize: 12, color: ORANGE, marginTop: 8 }}>
+                ⚠️ Unavailable while {unanalysedPolicies().map(p => p.file_name).join(', ')} {unanalysedPolicies().length === 1 ? 'is' : 'are'} unread. A gap report built over a document nobody read would name coverage the client may actually hold.
+              </div>
+            )}
+            {progErr && <div style={{ fontSize: 12, color: RED, marginTop: 8, lineHeight: 1.5 }}>{progErr}</div>}
+            {progReport && (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid ' + LIGHT_GRAY }}>
+                {progReport.program_summary && <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6, marginBottom: 12 }}>{progReport.program_summary}</div>}
+
+                {progReport.lines?.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Coverage Lines</div>
+                    {progReport.lines.map((l, i) => {
+                      const tone = l.state === 'present' ? GREEN : l.state === 'absent' ? RED : MID_GRAY;
+                      const label = l.state === 'present' ? 'PRESENT' : l.state === 'absent' ? 'ABSENT' : l.state === 'failed_unread' ? 'UNREAD' : 'NOT SUPPLIED';
+                      return (
+                        <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 6, fontSize: 13, lineHeight: 1.5 }}>
+                          <span style={{ ...S.tag, background: tone === GREEN ? '#F0FDF4' : tone === RED ? '#FEF2F2' : '#F3F4F6', color: tone, minWidth: 104, textAlign: 'center', flexShrink: 0 }}>{label}</span>
+                          <span><strong>{l.line}</strong>{l.evidence ? <span style={{ color: MID_GRAY }}> — {l.evidence}</span> : null}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {progReport.cross_policy_findings?.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Cross-Policy Findings</div>
+                    {progReport.cross_policy_findings.map((f, i) => (
+                      <div key={i} style={{ padding: 12, background: WHITE, borderRadius: 6, border: '1px solid ' + LIGHT_GRAY, marginBottom: 6 }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                          <span style={{ ...S.tag, background: LIGHT_GOLD, color: NAVY }}>{f.category}</span>
+                          <span style={{ ...S.tag, background: f.severity === 'HIGH' ? '#FEE2E2' : f.severity === 'MODERATE' ? '#FEF3C7' : '#F3F4F6', color: f.severity === 'HIGH' ? RED : f.severity === 'MODERATE' ? ORANGE : MID_GRAY }}>{f.severity}</span>
+                        </div>
+                        <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{f.finding}</div>
+                        {f.evidence && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4, lineHeight: 1.5 }}>Evidence: {f.evidence}</div>}
+                        {f.recommendation && <div style={{ fontSize: 12, color: '#333', marginTop: 4, lineHeight: 1.5 }}>→ {f.recommendation}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {progReport.expired_or_expiring?.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Expired / Expiring</div>
+                    {progReport.expired_or_expiring.map((e, i) => (
+                      <div key={i} style={{ fontSize: 13, color: ORANGE, lineHeight: 1.5, marginBottom: 3 }}>⏱ {e}</div>
+                    ))}
+                  </div>
+                )}
+
+                {progReport.questions_for_client?.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Ask The Client</div>
+                    {progReport.questions_for_client.map((q, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 13, lineHeight: 1.5 }}><span style={{ color: MID_GRAY }}>?</span><span>{q}</span></div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           {/* The "Missing Policy Types" block was removed here. It listed every
               POLICY_TYPES entry not uploaded to this audit and called them
               missing -- so a one-policy audit announced that Commercial Auto
