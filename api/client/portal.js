@@ -44,8 +44,11 @@ const MAX_SIGNER_NAME = 200;
 const MAX_SIGNER_TITLE = 100;
 
 // Valid policy_type ids. Must stay in sync with POLICY_TYPES in src/App.jsx.
+// "detect" is the auto-identify sentinel; "auto_policy" is Commercial Auto.
+// "auto" was the sentinel's old id and stays accepted so links already in a
+// client's inbox keep working -- it is NOT an automobile policy.
 const POLICY_TYPE_IDS = new Set([
-  "auto", "gl", "eo", "do", "cyber", "epli",
+  "detect", "auto", "gl", "eo", "do", "cyber", "epli",
   "products", "wc", "auto_policy", "property", "umbrella",
 ]);
 
