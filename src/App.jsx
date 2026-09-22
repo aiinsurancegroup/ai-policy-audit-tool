@@ -81,6 +81,9 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
   - Flag umbrella/excess gaps if no umbrella is present
   - Compare limits against industry standards for the business size and type
 
+  DATES — YOU HAVE NO CLOCK:
+  You cannot know today's date. It is supplied in the user message as TODAY'S DATE, and that value is the ONLY present you may reason from. Every statement about renewals, timing, urgency or what happens "next" must be measured against it. Compare the policy's expiration date to it before writing anything time-related: if expiration is in the past the policy has EXPIRED and must be described that way, not as an upcoming renewal. Never suggest acting by a date that has already passed.
+
   SCOPE — WHAT THIS ANALYSIS CAN AND CANNOT SAY:
   You are reading EXACTLY ONE document. Other policies the client holds are analyzed separately and you cannot see them. Therefore:
   - You may state what IS in this document.
@@ -118,8 +121,10 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
   PART 3 — AGENT OPPORTUNITY ANALYSIS (INTERNAL — NEVER SHOWN TO THE CLIENT):
   This section is for the producing agent's eyes only and will NEVER appear in any client-facing report. Identify sales angles, cross-sell opportunities, and credible reasons for the agent to initiate a follow-up call.
 
+  NEVER ESTIMATE MONEY. Do not state or imply a percentage saving, a dollar saving, a premium reduction, or any projected figure — not as a range, not as "roughly", not as an illustration. You cannot see the client's other quotes, loss history, or rating basis, so any such number is invented and would be quoted back to a client as though it were analysis. Report the premium printed on the document if it is shown, and nothing beyond it.
+
   LOOK FOR:
-  - Premium inefficiencies the agent could solve (overlaps, outdated endorsements, missing credits, over-insurance)
+  - Structural premium issues the agent could raise (outdated endorsements, missing credits, over-insurance) — described qualitatively, with no figures attached
   - Coverage lines not evidenced in THIS document that a business of this type commonly carries (e.g. EPLI for a 50+ employee company, Cyber for a tech firm, an AI-specific endorsement for an AI-using firm). Frame these as worth confirming with the client, never as confirmed absences — the client may already hold them on a policy you were not shown.
   - Limits well above or below industry norms for this business type and size
   - Multi-carrier setups that could be consolidated to a single carrier for better terms
@@ -130,7 +135,7 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
 
   RESPOND ONLY with this JSON:
   {
-    "policy_type": "GL|EO|DO|Cyber|EPLI|Products|Other",
+    "policy_type": "EXACTLY ONE of: gl | eo | do | cyber | epli | products | wc | auto_policy | property | umbrella | other  (auto_policy = any commercial automobile policy including excess/hired/non-owned auto; umbrella = umbrella OR excess liability; use other ONLY if genuinely none of these fit)",
     "carrier": "carrier name",
     "policy_number": "if visible",
     "effective_date": "if visible",
@@ -150,10 +155,10 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
     "agent_opportunities": {
       "lead_hook": "single sentence the agent can use to open a follow-up call",
       "primary_opportunity": "the single strongest sales angle from this policy",
-      "estimated_premium_impact": "rough range like '8-12% premium savings' or '$X-Y annual reduction' if calculable; otherwise null",
+      "premium_as_shown": "the premium exactly as printed on the document, or null if not shown. NEVER an estimate, a saving, or a projection.",
       "talking_points": ["3-5 specific points the agent should bring up on the call"],
       "lines_not_evidenced_here": ["coverage lines not evidenced in THIS document that are worth confirming with the client — NOT confirmed absences"],
-      "urgency_factors": ["what makes this time-sensitive: renewal dates, regulatory changes, recent industry exposure events"]
+      "urgency_factors": ["what makes this time-sensitive, measured against TODAY'S DATE as given in the user message. If the expiration date is already in the past, the FIRST factor must say so plainly: 'This policy EXPIRED on <date> — confirm whether it was renewed before relying on any of this analysis.' Never propose a marketing or renewal timeline that has already passed."]
     }
   }
 
@@ -186,7 +191,13 @@ const isAnalysed = (s) => isVerdict(s) || s === 'UNKNOWN';
 // 'detect' sentinel never survives a completed run. Anything unrecognised
 // returns null and the existing type is kept -- never overwrite with a guess.
 const AI_TYPE_TO_ID = {
+  // Our own ids, which is what the prompt now asks for.
+  'auto_policy': 'auto_policy', 'other': null,
+  // Free-text spellings, kept because rows written before the prompt asked for
+  // ids still carry them, and a model can always drift back to prose.
   gl: 'gl', 'general liability': 'gl', cgl: 'gl', 'commercial general liability': 'gl',
+  'excess auto': 'auto_policy', 'commercial excess auto': 'auto_policy', 'hired and non-owned auto': 'auto_policy',
+  'excess liability': 'umbrella', 'commercial umbrella': 'umbrella', 'excess/umbrella': 'umbrella',
   eo: 'eo', 'e&o': 'eo', 'errors & omissions': 'eo', 'errors and omissions': 'eo', 'professional liability': 'eo',
   do: 'do', 'd&o': 'do', 'directors & officers': 'do', 'directors and officers': 'do',
   cyber: 'cyber', 'cyber liability': 'cyber',
@@ -202,8 +213,6 @@ const resolveDetectedType = (aiType) => {
   return AI_TYPE_TO_ID[aiType.trim().toLowerCase()] ?? null;
 };
 
-// One place that decides what a policy row's outcome was, so the report, the
-// risk roll-up and the finalise gate can never disagree.
 // Turn a non-OK /api/analyze response into something a human can act on.
 // The endpoint distinguishes its own 401/403/413 from an upstream 502 and puts
 // the real upstream status in the body; surface that rather than a bare code.
@@ -218,9 +227,21 @@ const describeFailure = async (resp) => {
   return `Analysis request failed (HTTP ${resp.status}${body?.error ? `: ${body.error}` : ''})`;
 };
 
+// One place that decides what a policy row's outcome was, so the report, the
+// risk roll-up and the finalise gate can never disagree.
 const failureReason = (pol) => {
   const raw = pol?.ai_raw_output || {};
   return raw.failure?.message || raw.error || 'the analysis did not complete';
+};
+
+// The model has no clock. Without being told the date it reasons from whenever
+// its training ended, which is how a policy expiring 8/30/2026 drew the advice
+// "begin marketing by May 2026" -- a deadline three months in the past. Sent in
+// the user message, not the system prompt, so the system prompt stays identical
+// between runs. Written out in full as well as ISO so it cannot be misread.
+const todayISO = () => {
+  const d = new Date();
+  return `${d.toISOString().slice(0, 10)} (${d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })})`;
 };
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -595,7 +616,7 @@ export default function App() {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
           body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-            { type: 'text', text: 'Analyze this ' + lbl + ' policy for ' + clientName + ' (Industry: ' + clientInd + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
+            { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + lbl + ' policy for ' + clientName + ' (Industry: ' + clientInd + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
           ] }] }),
         });
         if (!resp.ok) throw new Error(await describeFailure(resp));
@@ -746,7 +767,7 @@ export default function App() {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
           body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-            { type: 'text', text: 'Analyze this ' + lbl + ' policy for ' + audit.client_name + ' (Industry: ' + audit.client_industry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
+            { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + lbl + ' policy for ' + audit.client_name + ' (Industry: ' + audit.client_industry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
           ] }] }),
         });
         if (!resp.ok) throw new Error(await describeFailure(resp));
@@ -1016,21 +1037,16 @@ export default function App() {
               </div>
             );
           })}
-          {(() => {
-            const uploaded = curPolicies.map(p => p.policy_type);
-            const missing = POLICY_TYPES.filter(pt => !uploaded.includes(pt.id));
-            return missing.length > 0 ? (
-              <div style={{ marginTop: 16, padding: 16, background: '#FFFBEB', borderRadius: 8, border: '1px solid ' + ORANGE }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: ORANGE, marginBottom: 8 }}>📎 Missing Policy Types</div>
-                <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6 }}>The following were not included. Consider requesting them for a complete analysis:</div>
-                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {missing.map(m => <span key={m.id} style={{ padding: '4px 12px', background: '#FEF3C7', borderRadius: 20, fontSize: 12, fontWeight: 600, color: ORANGE }}>{m.icon} {m.label}</span>)}
-                </div>
-              </div>
-            ) : (
-              <div style={{ marginTop: 16, padding: 12, background: '#F0FDF4', borderRadius: 8, border: '1px solid ' + GREEN, fontSize: 13, color: GREEN, fontWeight: 600 }}>✅ All 6 policy types included — comprehensive audit</div>
-            );
-          })()}
+          {/* The "Missing Policy Types" block was removed here. It listed every
+              POLICY_TYPES entry not uploaded to this audit and called them
+              missing -- so a one-policy audit announced that Commercial Auto
+              and Umbrella/Excess were absent, when the client may well hold
+              both and simply not have sent them. It knew nothing about the
+              client; it only knew what was in this audit. The per-policy
+              "Not Evidenced In This Document" section and, later, the
+              program-level report make that claim only where it can be
+              supported. (It also hardcoded "All 6 policy types" against a list
+              of eleven.) */}
         </div>
         {curPolicies.map((pol, pi) => {
           const ti = POLICY_TYPES.find(p => p.id === pol.policy_type);
@@ -1113,10 +1129,16 @@ export default function App() {
                     <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{out.agent_opportunities.primary_opportunity}</div>
                   </div>
                 )}
-                {out.agent_opportunities.estimated_premium_impact && (
+                {/* "Estimated Premium Impact" was removed. It rendered invented
+                    savings ("10-20% ($5,000-$10,000)") in confident green, from
+                    a model that cannot see the client's quotes, loss history or
+                    rating basis. Only the premium printed on the document is
+                    shown now. estimated_premium_impact is deliberately NOT read
+                    from older rows -- those figures were invented too. */}
+                {out.agent_opportunities.premium_as_shown && (
                   <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Estimated Premium Impact</div>
-                    <div style={{ fontSize: 13, color: GREEN, fontWeight: 600 }}>{out.agent_opportunities.estimated_premium_impact}</div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Premium As Shown On Document</div>
+                    <div style={{ fontSize: 13, color: NAVY, fontWeight: 600 }}>{out.agent_opportunities.premium_as_shown}</div>
                   </div>
                 )}
                 {out.agent_opportunities.talking_points && out.agent_opportunities.talking_points.length > 0 && (
