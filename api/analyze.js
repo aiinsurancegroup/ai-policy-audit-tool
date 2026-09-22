@@ -132,6 +132,14 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-opus-5',
+        // A 44-page policy at the default effort ran past the 120s function
+        // limit twice and was killed mid-answer. Reasoning time, not token
+        // budget, is the binding constraint here, so cap the reasoning rather
+        // than only widening the clock. Low is aimed at a structured extraction
+        // working from an already detailed prompt; raise it if findings thin
+        // out. Whatever this is set to, both models in the comparison must use
+        // the same value or the comparison measures the setting, not the model.
+        output_config: { effort: 'low' },
         // Raised from 4000 with the model change, and the two are linked. The
         // retired claude-sonnet-4 did not think before answering, so 4000 was
         // all answer. Current models reason first by default and that reasoning
