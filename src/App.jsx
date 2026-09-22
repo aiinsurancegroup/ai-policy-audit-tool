@@ -604,6 +604,7 @@ export default function App() {
   const [fActions, setFActions] = useState({});
   const [fNotes, setFNotes] = useState({});
   const [clientLink, setClientLink] = useState('');
+  const [expandedPolicies, setExpandedPolicies] = useState(new Set());
   const [rowBusy, setRowBusy] = useState(null);   // policy id, or 'new'
   const [rowErr, setRowErr] = useState('');
   const [addType, setAddType] = useState('detect');
@@ -1449,19 +1450,45 @@ export default function App() {
               supported. (It also hardcoded "All 6 policy types" against a list
               of eleven.) */}
         </div>
+        {/* Five collapsed cards with findings inside them is a lot of clicking,
+            and Finalize is gated on every finding being reviewed. */}
+        {curPolicies.length > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 8 }} className="no-print">
+            <button style={S.actionBtn(false, { small: true })}
+              onClick={() => setExpandedPolicies(new Set(curPolicies.map(p => p.id)))}>Expand all</button>
+            <button style={S.actionBtn(expandedPolicies.size === 0, { small: true })}
+              disabled={expandedPolicies.size === 0}
+              onClick={() => setExpandedPolicies(new Set())}>Collapse all</button>
+          </div>
+        )}
         {curPolicies.map((pol, pi) => {
           const ti = POLICY_TYPES.find(p => p.id === pol.policy_type);
           const out = isDraft ? pol.ai_raw_output : (pol.validated_output || pol.ai_raw_output);
           if (!out) return null;
           const findings = out.findings || [], gaps = out.coverage_gaps || [], recs = out.recommendations || [];
+          // Level 2: collapsed by default. The header has to carry enough for
+          // the operator to know what is inside without opening it -- above all
+          // how many findings still need review, since Finalize is gated on that
+          // and an unopened card would otherwise hide the outstanding work.
+          const open = expandedPolicies.has(pol.id);
+          const reviewed = findings.filter((_, fi) => fActions[pi + '-' + fi]).length;
+          const progRow = progReport?.policy_table?.find(r => r.file_name === pol.file_name);
 
           return (<div key={pol.id} style={S.card}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 8 }}>
+            <div
+              onClick={() => setExpandedPolicies(prev => { const n = new Set(prev); n.has(pol.id) ? n.delete(pol.id) : n.add(pol.id); return n; })}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: open ? 20 : 0, flexWrap: 'wrap', gap: 8, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: 14, color: MID_GRAY, width: 12 }}>{open ? '▾' : '▸'}</span>
                 <span style={{ fontSize: 24 }}>{ti?.icon || '📄'}</span>
                 <div><div style={{ fontSize: 18, fontWeight: 700 }}>{ti?.label || pol.policy_type}</div>
-                <div style={{ fontSize: 12, color: MID_GRAY }}>{pol.file_name}{pol.carrier ? ' • ' + pol.carrier : ''}</div></div>
+                <div style={{ fontSize: 12, color: MID_GRAY }}>{pol.file_name}{pol.carrier ? ' • ' + (progRow?.carrier_short || pol.carrier) : ''}</div></div>
               </div>
+              {!open && findings.length > 0 && (
+                <div style={{ fontSize: 12, color: reviewed === findings.length ? GREEN : ORANGE, fontWeight: 600 }}>
+                  {findings.length} finding{findings.length === 1 ? '' : 's'} · {reviewed}/{findings.length} reviewed
+                </div>
+              )}
               {/* This badge had a case for ERROR but none for FAILED, so once
                   migration 03 renamed the status every failed policy fell
                   through to "UNKNOWN" -- the verdict meaning "read, and not an
@@ -1478,6 +1505,28 @@ export default function App() {
                   : pol.ai_status === 'AFFIRMATIVE' ? '✅ COVERED'
                   : '❓ NOT A POLICY'}
               </div>
+            </div>
+
+            {!open ? null : <>
+
+            {/* The long forms the table deliberately shortened. The table shows
+                "Hanover" and "$4,976"; this is where the full legal entity and
+                the premium line exactly as printed belong. */}
+            <div style={{ padding: 14, background: LIGHT_BG, borderRadius: 8, marginBottom: 16, fontSize: 12, lineHeight: 1.7 }}>
+              {pol.carrier && <div><span style={{ color: MID_GRAY }}>Carrier: </span><strong style={{ color: NAVY }}>{pol.carrier}</strong></div>}
+              {pol.policy_number && <div><span style={{ color: MID_GRAY }}>Policy number: </span>{pol.policy_number}</div>}
+              {(pol.effective_date || pol.expiration_date) && (
+                <div><span style={{ color: MID_GRAY }}>Term: </span>{pol.effective_date || '?'} to {pol.expiration_date || '?'}
+                  {progRow?.term_status?.label && <span style={{ color: MID_GRAY }}> — {progRow.term_status.label}</span>}</div>
+              )}
+              {progRow?.key_limits_all?.length > 0 && (
+                <div><span style={{ color: MID_GRAY }}>Limits: </span>{progRow.key_limits_all.join(' · ')}</div>
+              )}
+              {progRow?.deductibles && <div><span style={{ color: MID_GRAY }}>Deductible: </span>{progRow.deductibles}</div>}
+              {out.agent_opportunities?.premium_as_shown && (
+                <div><span style={{ color: MID_GRAY }}>Premium, as printed on the document: </span>{out.agent_opportunities.premium_as_shown}</div>
+              )}
+              {pol.ai_status && <div><span style={{ color: MID_GRAY }}>Verdict: </span>{progRow?.ai_verdict?.label || pol.ai_status}</div>}
             </div>
 
             {/* A failed policy has no findings, gaps or recommendations to show,
@@ -1603,6 +1652,7 @@ export default function App() {
                 )}
               </div>
             )}
+            </>}
           </div>);
         })}
 
@@ -1636,7 +1686,14 @@ export default function App() {
             The AI Insurance Group works with Lloyd's, Munich Re, and specialty AI liability markets to place affirmative coverage.
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }} className="no-print">
-            {!isDraft && <button style={S.btn} onClick={() => { logActivity(adminPw, a.id, 'REPORT_EXPORTED', {}, valName || 'operator'); window.print(); }}>Print / Save as PDF</button>}
+            {/* Collapsed cards are not rendered at all, so printing without
+                expanding them first would silently produce a report missing
+                every policy's detail. Expand, let React paint, then print. */}
+            {!isDraft && <button style={S.btn} onClick={() => {
+              logActivity(adminPw, a.id, 'REPORT_EXPORTED', {}, valName || 'operator');
+              setExpandedPolicies(new Set(curPolicies.map(p => p.id)));
+              setTimeout(() => window.print(), 150);
+            }}>Print / Save as PDF</button>}
             <button style={S.btnOut} onClick={async () => { await loadLog(a.id); setScreen('activity-log'); }}>Activity Log</button>
           </div>
         </div>

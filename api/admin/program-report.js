@@ -508,6 +508,11 @@ export default async function handler(req, res) {
         ? supplied.key_limits.filter((x) => typeof x === "string" && x.trim()).slice(0, 3).map((x) => x.trim())
         : typeof supplied?.key_limits === "string" && supplied.key_limits.trim() ? [supplied.key_limits.trim()] : [];
       row.key_limits = limits.length ? limits.join(" · ") : null;
+      // Every figure the analysis gave, uncapped. The table shows the first
+      // three; Level 2 shows them all when a policy is expanded.
+      row.key_limits_all = Array.isArray(supplied?.key_limits)
+        ? supplied.key_limits.filter((x) => typeof x === "string" && x.trim()).map((x) => x.trim())
+        : limits;
       const ded = typeof supplied?.deductibles === "string" ? supplied.deductibles.trim() : null;
       row.deductibles = ded && ded.length <= 40 ? ded : (ded ? ded.slice(0, 40) + "…" : null);
     }
