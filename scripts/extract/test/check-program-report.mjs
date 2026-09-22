@@ -193,6 +193,38 @@ expect('a model-supplied policy_table is ignored', spoof.body.result.policy_tabl
 expect('a model-supplied computed finding is ignored', spoof.body.result.program_findings.computed.every(f => f.finding !== 'fabricated computed finding'), true);
 anthropicResponse = null;
 
+// --- limit adequacy ---------------------------------------------------------
+// A top layer whose requirements could not be read must say so, and must NOT
+// read as though the limits beneath it were confirmed adequate.
+policyRows = [
+  policy({ file_name: 'exc.pdf', policy_type: 'excess_auto', ai_raw_output: { policy_type: 'excess_auto' } }),
+  policy({ file_name: 'auto.pdf', policy_type: 'auto_policy' }),
+];
+await call({ body: { audit_id: 'a1', today: '2026-06-15' } });
+const la1 = inserted.result.limit_adequacy;
+expect('excess_auto is treated as a top layer', la1.layers.length, 1);
+expect('  and named as Excess Auto', la1.layers[0].top_layer_line, 'Excess Auto');
+expect('nothing determinable without requirements', la1.determinable, false);
+expect('  and the summary refuses to imply adequacy', la1.summary.includes('not a finding that the limits are adequate'), true);
+expect('limits carried still listed', la1.carried.length, 2);
+expect('  top layer sorted last', la1.carried[la1.carried.length - 1].is_top_layer, true);
+
+// With requirements and actuals present, the comparison is real.
+policyRows = [
+  policy({ file_name: 'exc.pdf', policy_type: 'excess_auto', ai_raw_output: { policy_type: 'excess_auto', underlying_required: { auto_policy: '$1,000,000' } } }),
+  policy({ file_name: 'auto.pdf', policy_type: 'auto_policy', ai_raw_output: { policy_type: 'auto_policy', general_review: { occurrence_limit: '$500,000' } } }),
+];
+await call({ body: { audit_id: 'a1', today: '2026-06-15' } });
+const la2 = inserted.result.limit_adequacy;
+expect('a real shortfall is determinable', la2.determinable, true);
+expect('  and stated as below_requirement', la2.layers[0].rows[0].state, 'below_requirement');
+expect('  no misleading summary when it IS determinable', la2.summary, 'null');
+
+// No top layer at all: say that, rather than nothing.
+policyRows = [policy({ file_name: 'auto.pdf', policy_type: 'auto_policy' })];
+await call({ body: { audit_id: 'a1', today: '2026-06-15' } });
+expect('no excess layer is stated plainly', inserted.result.limit_adequacy.summary.includes('No excess or umbrella layer was supplied'), true);
+
 // The prompt must carry the writing rule and the computed facts.
 policyRows = [policy()];
 await call({ body: { audit_id: 'a1', today: '2026-06-15' } });

@@ -1374,6 +1374,56 @@ export default function App() {
                   </div>
                 )}
 
+                {/* Limit adequacy: what each layer carries, and whether the
+                    primaries satisfy what sits above them. Its own section
+                    because it is the question the report gets opened for. */}
+                {progReport.limit_adequacy && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={S.sec}>Limit Adequacy</div>
+                    {progReport.limit_adequacy.summary && (
+                      <div style={{ padding: 12, background: '#FFFBEB', border: '1px solid ' + ORANGE, borderRadius: 6, fontSize: 12, color: '#333', lineHeight: 1.6, marginBottom: 10 }}>
+                        {progReport.limit_adequacy.summary}
+                      </div>
+                    )}
+                    {progReport.limit_adequacy.layers?.map((l, i) => (
+                      <div key={i} style={{ marginBottom: 10, padding: 12, background: WHITE, border: '1px solid ' + LIGHT_GRAY, borderRadius: 6 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: NAVY }}>
+                          {l.top_layer_line} sits above{l.policy_number ? ` · ${l.policy_number}` : ''}
+                        </div>
+                        {!l.requirements_extracted && l.note && (
+                          <div style={{ fontSize: 12, color: ORANGE, marginTop: 4, lineHeight: 1.5 }}>{l.note}</div>
+                        )}
+                        {l.rows?.map((r, j) => {
+                          const tone = r.state === 'below_requirement' ? RED : r.state === 'meets_or_exceeds' ? GREEN : MID_GRAY;
+                          const label = r.state === 'below_requirement' ? 'BELOW' : r.state === 'meets_or_exceeds' ? 'MEETS' : 'UNKNOWN';
+                          return (
+                            <div key={j} style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 6, fontSize: 12 }}>
+                              <span style={{ ...S.tag, background: tone === GREEN ? '#F0FDF4' : tone === RED ? '#FEF2F2' : '#F3F4F6', color: tone, minWidth: 74, textAlign: 'center' }}>{label}</span>
+                              <span style={{ flex: 1 }}>{r.line}</span>
+                              <span style={{ color: MID_GRAY }}>
+                                required {r.required ? '$' + r.required.toLocaleString() : '—'} · carried {r.actual ? '$' + r.actual.toLocaleString() : '—'}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                    {progReport.limit_adequacy.carried?.length > 0 && (
+                      <div style={{ padding: 12, background: LIGHT_BG, borderRadius: 6 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Limits Carried</div>
+                        {progReport.limit_adequacy.carried.map((c, i) => (
+                          <div key={i} style={{ display: 'flex', gap: 10, fontSize: 12, marginBottom: 4, lineHeight: 1.5 }}>
+                            <span style={{ minWidth: 150, fontWeight: c.is_top_layer ? 700 : 400, color: c.is_top_layer ? NAVY : '#333' }}>
+                              {c.is_top_layer ? '▲ ' : ''}{c.line}
+                            </span>
+                            <span>{c.key_limits || <span style={{ color: MID_GRAY }}>not extracted</span>}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Program findings: computed first, then the model's synthesis.
                     The order is the point -- the arithmetic is not an opinion. */}
                 {(progReport.program_findings?.computed?.length > 0 || progReport.program_findings?.synthesis?.length > 0) && (

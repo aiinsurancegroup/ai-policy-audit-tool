@@ -194,6 +194,60 @@ function buildPolicyTable(policies, today) {
   });
 }
 
+// The limit adequacy section. Separate from program findings because "is this
+// tower deep enough" is the question an agent actually opens the report to
+// answer, and it was previously reduced to one line inside a findings list --
+// and on an audit where the requirements could not be read, that line said only
+// that nothing could be determined, which is true but useless on its own.
+//
+// Entirely computed. Where a figure is missing the state says so; nothing here
+// infers adequacy from silence.
+function limitAdequacy(policyTable, crossChecks) {
+  const layers = crossChecks.underlying_vs_umbrella.map((u) => {
+    const top = policyTable.find((r) => r.file_name === u.umbrella_file);
+    return {
+      top_layer_line: top ? top.line : "Top layer",
+      top_layer_file: u.umbrella_file,
+      policy_number: u.umbrella_policy_number,
+      requirements_extracted: u.requirements_extracted,
+      requirements: u.requirements,
+      note: u.note,
+      rows: u.comparisons.map((c) => ({
+        line: lineLabel(c.policy_type),
+        file_name: c.file_name,
+        required: c.required,
+        actual: c.actual,
+        state: c.comparison,
+      })),
+    };
+  });
+
+  // Every policy's limits as carried, so the tower is legible even when no
+  // comparison is possible. Top layers last, which is how a tower is read.
+  const carried = [...policyTable]
+    .sort((a, b) => Number(TOP_LAYER_TYPES.has(a.policy_type)) - Number(TOP_LAYER_TYPES.has(b.policy_type)))
+    .map((r) => ({
+      line: r.line,
+      file_name: r.file_name,
+      is_top_layer: TOP_LAYER_TYPES.has(r.policy_type),
+      key_limits: r.key_limits,
+      deductibles: r.deductibles,
+    }));
+
+  const determinable = layers.some((l) => l.rows.some((r) => r.state === "below_requirement" || r.state === "meets_or_exceeds"));
+
+  return {
+    layers,
+    carried,
+    determinable,
+    summary: !layers.length
+      ? "No excess or umbrella layer was supplied, so there is no underlying requirement to test the primary limits against."
+      : determinable
+        ? null
+        : "An excess or umbrella layer was supplied but its underlying requirements could not be read, so no primary policy can be confirmed to satisfy them. This is not a finding that the limits are adequate.",
+  };
+}
+
 // Program findings that are arithmetic or set comparison, not judgement. These
 // are computed, stored as computed, and shown before anything the model says.
 function computedFindings(policies, table, crossChecks) {
@@ -521,6 +575,9 @@ export default async function handler(req, res) {
       level: 1,
       generated_for_date: todayStr,
       policy_table: policyTable,
+      // Built after the limits are merged in, so the tower shows what each
+      // layer actually carries.
+      limit_adequacy: limitAdequacy(policyTable, crossChecks),
       program_findings: {
         computed,
         synthesis: Array.isArray(model.program_synthesis) ? model.program_synthesis : [],
