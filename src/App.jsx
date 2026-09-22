@@ -21,8 +21,15 @@ async function adminJson(password, body) {
   try { return await r.json(); } catch { return null; }
 }
 
+// 'detect' is the "identify this for me" sentinel, NOT an automobile policy.
+// It was called 'auto' and sat one row above 'auto_policy' (Commercial Auto),
+// which reads as a duplicate and is the opposite of one: production rows tagged
+// 'auto' were identified by the analysis as GL and Cyber. Renamed so the two can
+// never be conflated. A completed analysis overwrites the sentinel with the type
+// it actually found (see resolveDetectedType), so a finished row always states
+// what the policy is.
 const POLICY_TYPES = [
-  { id: 'auto', label: 'Auto-Detect (AI will identify)', icon: '🔍' },
+  { id: 'detect', label: 'Auto-Detect (AI will identify)', icon: '🔍' },
   { id: 'gl', label: 'General Liability (CGL)', icon: '🛡️' },
   { id: 'eo', label: 'Errors & Omissions (E&O)', icon: '⚖️' },
   { id: 'do', label: 'Directors & Officers (D&O)', icon: '🏛️' },
@@ -74,7 +81,18 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
   - Flag umbrella/excess gaps if no umbrella is present
   - Compare limits against industry standards for the business size and type
 
-  COVERAGE GAPS:
+  DATES — YOU HAVE NO CLOCK:
+  You cannot know today's date. It is supplied in the user message as TODAY'S DATE, and that value is the ONLY present you may reason from. Every statement about renewals, timing, urgency or what happens "next" must be measured against it. Compare the policy's expiration date to it before writing anything time-related: if expiration is in the past the policy has EXPIRED and must be described that way, not as an upcoming renewal. Never suggest acting by a date that has already passed.
+
+  SCOPE — WHAT THIS ANALYSIS CAN AND CANNOT SAY:
+  You are reading EXACTLY ONE document. Other policies the client holds are analyzed separately and you cannot see them. Therefore:
+  - You may state what IS in this document.
+  - You may state that a coverage is NOT EVIDENCED IN THIS DOCUMENT.
+  - You must NEVER state or imply that the client lacks a coverage line, has no umbrella, has no auto policy, or needs to purchase a line. A line absent from this document may be fully covered by another policy you were not shown.
+  - Phrase every absence as "not evidenced in this document" or "no [line] coverage appears in this policy", never as "the client has no [line]" or "this business needs [line]".
+  - Do not compare this policy against other policies, and do not comment on overlaps between policies. A separate program-level review does that with every policy in hand.
+
+  COVERAGE GAPS (within this document only — absence here is not proof of absence overall):
   - Missing hired/non-owned auto coverage
   - Missing employment practices liability (EPLI)
   - Missing cyber liability / data breach coverage
@@ -99,14 +117,15 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
   - Multiple carriers where bundling may reduce cost
   - Outdated endorsements that could be modernized
   - Missing loss-free credits or experience modifications
-  - Coverage overlaps between policies (paying twice for same risk)
 
   PART 3 — AGENT OPPORTUNITY ANALYSIS (INTERNAL — NEVER SHOWN TO THE CLIENT):
   This section is for the producing agent's eyes only and will NEVER appear in any client-facing report. Identify sales angles, cross-sell opportunities, and credible reasons for the agent to initiate a follow-up call.
 
+  NEVER ESTIMATE MONEY. Do not state or imply a percentage saving, a dollar saving, a premium reduction, or any projected figure — not as a range, not as "roughly", not as an illustration. You cannot see the client's other quotes, loss history, or rating basis, so any such number is invented and would be quoted back to a client as though it were analysis. Report the premium printed on the document if it is shown, and nothing beyond it.
+
   LOOK FOR:
-  - Premium inefficiencies the agent could solve (overlaps, outdated endorsements, missing credits, over-insurance)
-  - Coverage lines NOT currently in place that this business clearly needs (e.g., no EPLI for a 50+ employee company, no Cyber for a tech firm, no Professional Liability for an advisory firm, no AI-specific endorsement for an AI-using firm)
+  - Structural premium issues the agent could raise (outdated endorsements, missing credits, over-insurance) — described qualitatively, with no figures attached
+  - Coverage lines not evidenced in THIS document that a business of this type commonly carries (e.g. EPLI for a 50+ employee company, Cyber for a tech firm, an AI-specific endorsement for an AI-using firm). Frame these as worth confirming with the client, never as confirmed absences — the client may already hold them on a policy you were not shown.
   - Limits well above or below industry norms for this business type and size
   - Multi-carrier setups that could be consolidated to a single carrier for better terms
   - Renewal timing that creates a natural conversation window (effective dates within 90-120 days)
@@ -116,7 +135,7 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
 
   RESPOND ONLY with this JSON:
   {
-    "policy_type": "GL|EO|DO|Cyber|EPLI|Products|Other",
+    "policy_type": "EXACTLY ONE of: gl | eo | do | cyber | epli | products | wc | auto_policy | property | umbrella | other  (auto_policy = any commercial automobile policy including excess/hired/non-owned auto; umbrella = umbrella OR excess liability; use other ONLY if genuinely none of these fit)",
     "carrier": "carrier name",
     "policy_number": "if visible",
     "effective_date": "if visible",
@@ -124,7 +143,7 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
     "ai_status": "EXCLUDED|SILENT|PARTIAL|AFFIRMATIVE",
     "risk_level": "HIGH|MODERATE|LOW",
     "findings": [{"type": "EXCLUSION|SUBLIMIT|DEFINITION_CHANGE|ENDORSEMENT|SILENT_GAP|AFFIRMATIVE", "form_number": "if identified or null", "description": "what was found", "policy_section": "where in policy", "impact": "what this means for AI claims", "verbatim_excerpt": "5-10 word key phrase"}],
-    "coverage_gaps": ["specific gap descriptions"],
+    "coverage_gaps": ["gaps within THIS document — phrase each as not evidenced here, never as a coverage the client lacks"],
     "recommendations": ["specific recommendations"],
     "general_review": {
       "limits_assessment": "ADEQUATE|BELOW_STANDARD|REVIEW_NEEDED",
@@ -136,15 +155,94 @@ const ANALYSIS_PROMPT = `You are an expert insurance policy analyst specializing
     "agent_opportunities": {
       "lead_hook": "single sentence the agent can use to open a follow-up call",
       "primary_opportunity": "the single strongest sales angle from this policy",
-      "estimated_premium_impact": "rough range like '8-12% premium savings' or '$X-Y annual reduction' if calculable; otherwise null",
+      "premium_as_shown": "the premium exactly as printed on the document, or null if not shown. NEVER an estimate, a saving, or a projection.",
       "talking_points": ["3-5 specific points the agent should bring up on the call"],
-      "new_lines_to_write": ["coverage lines this business clearly needs that aren't currently in place"],
-      "urgency_factors": ["what makes this time-sensitive: renewal dates, regulatory changes, recent industry exposure events"]
+      "lines_not_evidenced_here": ["coverage lines not evidenced in THIS document that are worth confirming with the client — NOT confirmed absences"],
+      "urgency_factors": ["what makes this time-sensitive, measured against TODAY'S DATE as given in the user message. If the expiration date is already in the past, the FIRST factor must say so plainly: 'This policy EXPIRED on <date> — confirm whether it was renewed before relying on any of this analysis.' Never propose a marketing or renewal timeline that has already passed."]
     }
   }
 
   If not an insurance policy: {"error": "Not an insurance policy", "ai_status": "UNKNOWN"}
   Be thorough. Miss nothing.`;
+
+// ---------------------------------------------------------------------------
+// ai_status vocabulary. Three kinds of value that must never share a bucket:
+//
+//   verdicts            the analysis completed and reached a conclusion about
+//                       AI coverage: EXCLUDED | SILENT | PARTIAL | AFFIRMATIVE
+//   UNKNOWN             completed, and the conclusion is "this is not an
+//                       insurance policy". A real finding about the document.
+//   FAILED  (ERROR)     the analysis did NOT complete. Says nothing whatever
+//                       about the document. ERROR is the legacy spelling and is
+//                       still read so old rows keep their meaning.
+//   PENDING             uploaded, not yet analysed.
+//
+// Conflating FAILED with UNKNOWN is what let a revoked API key, a retired model
+// and two function timeouts all render as "Invalid - Not a Commercial Policy".
+const VERDICT_STATUSES = ['EXCLUDED', 'SILENT', 'PARTIAL', 'AFFIRMATIVE'];
+const isVerdict = (s) => VERDICT_STATUSES.includes(s);
+const isFailed = (s) => s === 'FAILED' || s === 'ERROR';
+const isPending = (s) => s === 'PENDING' || !s;
+// "Analysed" means the run finished, whatever it concluded. UNKNOWN counts:
+// the document was read and found not to be a policy. FAILED and PENDING do not.
+const isAnalysed = (s) => isVerdict(s) || s === 'UNKNOWN';
+
+// The analysis reports the type it identified. Map it back to our ids so the
+// 'detect' sentinel never survives a completed run. Anything unrecognised
+// returns null and the existing type is kept -- never overwrite with a guess.
+const AI_TYPE_TO_ID = {
+  // Our own ids, which is what the prompt now asks for.
+  'auto_policy': 'auto_policy', 'other': null,
+  // Free-text spellings, kept because rows written before the prompt asked for
+  // ids still carry them, and a model can always drift back to prose.
+  gl: 'gl', 'general liability': 'gl', cgl: 'gl', 'commercial general liability': 'gl',
+  'excess auto': 'auto_policy', 'commercial excess auto': 'auto_policy', 'hired and non-owned auto': 'auto_policy',
+  'excess liability': 'umbrella', 'commercial umbrella': 'umbrella', 'excess/umbrella': 'umbrella',
+  eo: 'eo', 'e&o': 'eo', 'errors & omissions': 'eo', 'errors and omissions': 'eo', 'professional liability': 'eo',
+  do: 'do', 'd&o': 'do', 'directors & officers': 'do', 'directors and officers': 'do',
+  cyber: 'cyber', 'cyber liability': 'cyber',
+  epli: 'epli', 'employment practices': 'epli', 'employment practices liability': 'epli',
+  products: 'products', 'products/completed ops': 'products', 'products liability': 'products',
+  wc: 'wc', 'workers compensation': 'wc', "workers' compensation": 'wc', 'workers comp': 'wc',
+  'commercial auto': 'auto_policy', auto: 'auto_policy', 'business auto': 'auto_policy', 'auto policy': 'auto_policy',
+  property: 'property', bop: 'property', 'property/bop': 'property', 'businessowners': 'property',
+  umbrella: 'umbrella', excess: 'umbrella', 'umbrella/excess': 'umbrella', 'excess liability': 'umbrella',
+};
+const resolveDetectedType = (aiType) => {
+  if (!aiType || typeof aiType !== 'string') return null;
+  return AI_TYPE_TO_ID[aiType.trim().toLowerCase()] ?? null;
+};
+
+// Turn a non-OK /api/analyze response into something a human can act on.
+// The endpoint distinguishes its own 401/403/413 from an upstream 502 and puts
+// the real upstream status in the body; surface that rather than a bare code.
+const describeFailure = async (resp) => {
+  let body = null;
+  try { body = await resp.json(); } catch {}
+  if (body?.upstream_status) return `Analysis service error (HTTP ${resp.status}, upstream ${body.upstream_status})`;
+  if (resp.status === 401) return 'Not authorised — sign out and sign in again';
+  if (resp.status === 403) return 'Request rejected as coming from an unrecognised origin';
+  if (resp.status === 413) return 'Document too large to analyse';
+  if (resp.status === 504) return 'Analysis timed out — the document may be too long';
+  return `Analysis request failed (HTTP ${resp.status}${body?.error ? `: ${body.error}` : ''})`;
+};
+
+// One place that decides what a policy row's outcome was, so the report, the
+// risk roll-up and the finalise gate can never disagree.
+const failureReason = (pol) => {
+  const raw = pol?.ai_raw_output || {};
+  return raw.failure?.message || raw.error || 'the analysis did not complete';
+};
+
+// The model has no clock. Without being told the date it reasons from whenever
+// its training ended, which is how a policy expiring 8/30/2026 drew the advice
+// "begin marketing by May 2026" -- a deadline three months in the past. Sent in
+// the user message, not the system prompt, so the system prompt stays identical
+// between runs. Written out in full as well as ISO so it cannot be misread.
+const todayISO = () => {
+  const d = new Date();
+  return `${d.toISOString().slice(0, 10)} (${d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })})`;
+};
 
 const genId = () => Math.random().toString(36).substr(2, 9);
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -178,10 +276,16 @@ const fileToBase64 = (file) => new Promise((res, rej) => {
   const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = () => rej(new Error('Read failed')); r.readAsDataURL(file);
 });
 
+// Only completed verdicts carry risk. A failed or pending policy said nothing,
+// and a document that is not a policy carries no coverage risk -- previously
+// every one of those fell through to MODERATE, or worse let an all-failed audit
+// read LOW, which is an audit asserting a coverage position nobody established.
 const calcRisk = (statuses) => {
-  if (statuses.includes('EXCLUDED')) return 'HIGH';
-  if (statuses.includes('SILENT')) return 'MODERATE';
-  if (statuses.every(s => s === 'AFFIRMATIVE')) return 'LOW';
+  const verdicts = statuses.filter(isVerdict);
+  if (!verdicts.length) return 'UNKNOWN';
+  if (verdicts.includes('EXCLUDED')) return 'HIGH';
+  if (verdicts.includes('SILENT')) return 'MODERATE';
+  if (verdicts.every(s => s === 'AFFIRMATIVE')) return 'LOW';
   return 'MODERATE';
 };
 
@@ -512,24 +616,32 @@ export default function App() {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
           body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-            { type: 'text', text: 'Analyze this ' + lbl + ' policy for ' + clientName + ' (Industry: ' + clientInd + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
+            { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + lbl + ' policy for ' + clientName + ' (Industry: ' + clientInd + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
           ] }] }),
         });
-        if (!resp.ok) throw new Error('API error ' + resp.status);
+        if (!resp.ok) throw new Error(await describeFailure(resp));
         const data = await resp.json();
         const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
         result = JSON.parse(txt.replace(/```json|```/g, '').trim());
-      } catch (e) { result = { error: e.message, ai_status: 'ERROR' }; }
+      } catch (e) { result = { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } }; }
 
-      statuses.push(result.ai_status || 'UNKNOWN');
+      // A missing status means the run did not produce one, which is a failure.
+      // It used to default to UNKNOWN -- a real verdict -- so a broken run was
+      // recorded as "this is not an insurance policy".
+      const status = result.ai_status || 'FAILED';
+      statuses.push(status);
       await adminApi(adminPw, { action: 'insert', table: 'audit_policies', payload: {
-        audit_id: audit.id, policy_type: f.pt, file_name: f.name, file_size_bytes: f.size,
+        audit_id: audit.id,
+        policy_type: (isAnalysed(status) && resolveDetectedType(result.policy_type)) || f.pt,
+        file_name: f.name, file_size_bytes: f.size,
         carrier: result.carrier || null, policy_number: result.policy_number || null,
         effective_date: result.effective_date || null, expiration_date: result.expiration_date || null,
-        ai_status: result.ai_status || 'UNKNOWN', risk_level: result.risk_level || null,
-        ai_raw_output: result, summary: result.summary || null, validation_status: 'PENDING',
+        ai_status: status, risk_level: isVerdict(status) ? (result.risk_level || null) : null,
+        ai_raw_output: result,
+        summary: isFailed(status) ? null : (result.summary || null),
+        validation_status: 'PENDING',
       }});
-      await logActivity(adminPw, audit.id, 'POLICY_ANALYZED', { type: lbl, file: f.name, status: result.ai_status, findings: result.findings?.length || 0 }, 'system');
+      await logActivity(adminPw, audit.id, 'POLICY_ANALYZED', { type: lbl, file: f.name, status, findings: result.findings?.length || 0, ...(isFailed(status) ? { failure: result.failure?.message } : {}) }, 'system');
     }
 
     const risk = calcRisk(statuses);
@@ -547,6 +659,11 @@ export default function App() {
     setFActions(a); setFNotes({}); setValName('');
   };
 
+  // Policies whose analysis never completed. A report must not be finalized
+  // while any of these are in it: the findings, the coverage gaps and the
+  // overall risk would all be drawn from a document nobody actually read.
+  const unanalysedPolicies = () => curPolicies.filter(p => !isAnalysed(p.ai_status));
+
   const allReviewed = () => {
     for (let pi = 0; pi < curPolicies.length; pi++) {
       const findings = curPolicies[pi].ai_raw_output?.findings || [];
@@ -557,6 +674,10 @@ export default function App() {
 
   const validateAudit = async () => {
     if (!valName.trim()) { setError('Enter your name to validate.'); return; }
+    if (unanalysedPolicies().length) {
+      setError('Cannot finalize: ' + unanalysedPolicies().map(p => p.file_name).join(', ') + ' did not analyse successfully. Re-run or remove before finalizing.');
+      return;
+    }
     if (!allReviewed()) { setError('Review all findings first.'); return; }
     setError('');
     const now = new Date().toISOString();
@@ -628,7 +749,9 @@ export default function App() {
     const statuses = [];
     for (let i = 0; i < pols.length; i++) {
       const pol = pols[i];
-      if (pol.ai_status !== 'PENDING') { statuses.push(pol.ai_status); continue; }
+      // Re-run anything that has not produced a verdict: PENDING as before, and
+      // now FAILED too, so a run that broke can be retried without re-uploading.
+      if (!isPending(pol.ai_status) && !isFailed(pol.ai_status)) { statuses.push(pol.ai_status); continue; }
       const lbl = POLICY_TYPES.find(p => p.id === pol.policy_type)?.label || pol.policy_type;
       setProgress({ c: i + 1, t: pols.length, l: lbl });
       setLoadMsg('Analyzing ' + lbl + '...');
@@ -644,22 +767,29 @@ export default function App() {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPw },
           body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-            { type: 'text', text: 'Analyze this ' + lbl + ' policy for ' + audit.client_name + ' (Industry: ' + audit.client_industry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
+            { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + lbl + ' policy for ' + audit.client_name + ' (Industry: ' + audit.client_industry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
           ] }] }),
         });
-        if (!resp.ok) throw new Error('API error ' + resp.status);
+        if (!resp.ok) throw new Error(await describeFailure(resp));
         const data = await resp.json();
         const txt = data.content?.map(c => c.type === 'text' ? c.text : '').join('') || '';
         result = JSON.parse(txt.replace(/```json|```/g, '').trim());
-      } catch (e) { result = { error: e.message, ai_status: 'ERROR' }; }
+      } catch (e) { result = { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } }; }
 
-      statuses.push(result.ai_status || 'UNKNOWN');
+      const status = result.ai_status || 'FAILED';
+      statuses.push(status);
       await adminApi(adminPw, { action: 'update', table: 'audit_policies', filter: { id: pol.id }, payload: {
-        ai_status: result.ai_status || 'UNKNOWN', risk_level: result.risk_level || null,
-        ai_raw_output: result, summary: result.summary || null, carrier: result.carrier || null,
+        ai_status: status, risk_level: isVerdict(status) ? (result.risk_level || null) : null,
+        ai_raw_output: result,
+        summary: isFailed(status) ? null : (result.summary || null),
+        carrier: result.carrier || null,
         policy_number: result.policy_number || null,
+        // Keep the stored type honest once the run has identified the document.
+        ...(isAnalysed(status) && resolveDetectedType(result.policy_type)
+          ? { policy_type: resolveDetectedType(result.policy_type) }
+          : {}),
       }});
-      await logActivity(adminPw, audit.id, 'POLICY_ANALYZED', { type: lbl, file: pol.file_name, status: result.ai_status }, 'system');
+      await logActivity(adminPw, audit.id, 'POLICY_ANALYZED', { type: lbl, file: pol.file_name, status, ...(isFailed(status) ? { failure: result.failure?.message } : {}) }, 'system');
     }
 
     const risk = calcRisk(statuses);
@@ -882,37 +1012,41 @@ export default function App() {
         <div style={S.card}>
           <div style={S.sec}>📋 Document Review Status</div>
           {curPolicies.map((pol, i) => {
-            const raw2 = pol.ai_raw_output || {};
             const typeInfo2 = POLICY_TYPES.find(p => p.id === pol.policy_type);
-            const isValid = raw2.ai_status && raw2.ai_status !== 'UNKNOWN' && raw2.ai_status !== 'ERROR' && raw2.ai_status !== 'PENDING' && !raw2.error;
+            // Three outcomes, three messages. A failed run is NOT a verdict
+            // about the document and must never be reported as one.
+            const st2 = pol.ai_status;
+            const failed2 = isFailed(st2) || isPending(st2);
+            const isValid = isVerdict(st2);
+            const outcomeText = failed2
+              ? (isPending(st2) ? 'Not analysed yet' : 'Analysis failed — ' + failureReason(pol))
+              : isValid
+                ? (st2 === 'EXCLUDED' ? 'Valid — AI Exclusion Found' : st2 === 'SILENT' ? 'Valid — Silent on AI' : st2 === 'PARTIAL' ? 'Valid — Partial Coverage' : st2 === 'AFFIRMATIVE' ? 'Valid — AI Covered' : 'Valid Policy')
+                : 'Read — not an insurance policy';
             return (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 8, marginBottom: 8, background: isValid ? '#F0FDF4' : '#FEF2F2', border: '1px solid ' + (isValid ? GREEN : RED) }}>
-                <span style={{ fontSize: 20 }}>{isValid ? '✅' : '❌'}</span>
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 8, marginBottom: 8, background: isValid ? '#F0FDF4' : failed2 ? '#FFFBEB' : '#FEF2F2', border: '1px solid ' + (isValid ? GREEN : failed2 ? ORANGE : RED) }}>
+                <span style={{ fontSize: 20 }}>{isValid ? '✅' : failed2 ? '⚠️' : '❌'}</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: NAVY }}>{typeInfo2?.label || pol.policy_type}</div>
                   <div style={{ fontSize: 12, color: MID_GRAY }}>{pol.file_name}</div>
                 </div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: isValid ? GREEN : RED }}>
-                  {isValid ? (raw2.ai_status === 'EXCLUDED' ? 'Valid — AI Exclusion Found' : raw2.ai_status === 'SILENT' ? 'Valid — Silent on AI' : raw2.ai_status === 'PARTIAL' ? 'Valid — Partial Coverage' : raw2.ai_status === 'AFFIRMATIVE' ? 'Valid — AI Covered' : 'Valid Policy') : 'Invalid — Not a Commercial Policy'}
+                <div style={{ fontSize: 13, fontWeight: 600, color: isValid ? GREEN : failed2 ? ORANGE : RED, textAlign: 'right', maxWidth: 320 }}>
+                  {outcomeText}
+                  {failed2 && !isPending(st2) && <div style={{ fontSize: 11, fontWeight: 400, color: MID_GRAY, marginTop: 2 }}>Nothing was read from this document. Re-run it before finalizing.</div>}
                 </div>
               </div>
             );
           })}
-          {(() => {
-            const uploaded = curPolicies.map(p => p.policy_type);
-            const missing = POLICY_TYPES.filter(pt => !uploaded.includes(pt.id));
-            return missing.length > 0 ? (
-              <div style={{ marginTop: 16, padding: 16, background: '#FFFBEB', borderRadius: 8, border: '1px solid ' + ORANGE }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: ORANGE, marginBottom: 8 }}>📎 Missing Policy Types</div>
-                <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6 }}>The following were not included. Consider requesting them for a complete analysis:</div>
-                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {missing.map(m => <span key={m.id} style={{ padding: '4px 12px', background: '#FEF3C7', borderRadius: 20, fontSize: 12, fontWeight: 600, color: ORANGE }}>{m.icon} {m.label}</span>)}
-                </div>
-              </div>
-            ) : (
-              <div style={{ marginTop: 16, padding: 12, background: '#F0FDF4', borderRadius: 8, border: '1px solid ' + GREEN, fontSize: 13, color: GREEN, fontWeight: 600 }}>✅ All 6 policy types included — comprehensive audit</div>
-            );
-          })()}
+          {/* The "Missing Policy Types" block was removed here. It listed every
+              POLICY_TYPES entry not uploaded to this audit and called them
+              missing -- so a one-policy audit announced that Commercial Auto
+              and Umbrella/Excess were absent, when the client may well hold
+              both and simply not have sent them. It knew nothing about the
+              client; it only knew what was in this audit. The per-policy
+              "Not Evidenced In This Document" section and, later, the
+              program-level report make that claim only where it can be
+              supported. (It also hardcoded "All 6 policy types" against a list
+              of eleven.) */}
         </div>
         {curPolicies.map((pol, pi) => {
           const ti = POLICY_TYPES.find(p => p.id === pol.policy_type);
@@ -995,10 +1129,16 @@ export default function App() {
                     <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{out.agent_opportunities.primary_opportunity}</div>
                   </div>
                 )}
-                {out.agent_opportunities.estimated_premium_impact && (
+                {/* "Estimated Premium Impact" was removed. It rendered invented
+                    savings ("10-20% ($5,000-$10,000)") in confident green, from
+                    a model that cannot see the client's quotes, loss history or
+                    rating basis. Only the premium printed on the document is
+                    shown now. estimated_premium_impact is deliberately NOT read
+                    from older rows -- those figures were invented too. */}
+                {out.agent_opportunities.premium_as_shown && (
                   <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Estimated Premium Impact</div>
-                    <div style={{ fontSize: 13, color: GREEN, fontWeight: 600 }}>{out.agent_opportunities.estimated_premium_impact}</div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Premium As Shown On Document</div>
+                    <div style={{ fontSize: 13, color: NAVY, fontWeight: 600 }}>{out.agent_opportunities.premium_as_shown}</div>
                   </div>
                 )}
                 {out.agent_opportunities.talking_points && out.agent_opportunities.talking_points.length > 0 && (
@@ -1009,14 +1149,23 @@ export default function App() {
                     ))}
                   </div>
                 )}
-                {out.agent_opportunities.new_lines_to_write && out.agent_opportunities.new_lines_to_write.length > 0 && (
-                  <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>New Lines to Write</div>
-                    {out.agent_opportunities.new_lines_to_write.map((nl, i) => (
-                      <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 13, lineHeight: 1.5 }}><span style={{ color: GREEN }}>+</span><span>{nl}</span></div>
-                    ))}
-                  </div>
-                )}
+                {(() => {
+                  // Rows written before the rename carry new_lines_to_write; new
+                  // rows carry lines_not_evidenced_here. Read both so existing
+                  // audits keep rendering, and label it as what it actually is:
+                  // absent from THIS document, not absent from the client's program.
+                  const notEvidenced = out.agent_opportunities.lines_not_evidenced_here || out.agent_opportunities.new_lines_to_write;
+                  if (!notEvidenced || !notEvidenced.length) return null;
+                  return (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Not Evidenced In This Document — Confirm With Client</div>
+                      {notEvidenced.map((nl, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 13, lineHeight: 1.5 }}><span style={{ color: MID_GRAY }}>?</span><span>{nl}</span></div>
+                      ))}
+                      <div style={{ fontSize: 11, color: MID_GRAY, marginTop: 4, fontStyle: 'italic' }}>This policy alone cannot show whether the client holds these elsewhere.</div>
+                    </div>
+                  );
+                })()}
                 {out.agent_opportunities.urgency_factors && out.agent_opportunities.urgency_factors.length > 0 && (
                   <div>
                     <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Urgency</div>
@@ -1039,11 +1188,17 @@ export default function App() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
               <div><label style={S.label}>Your Full Name *</label><input style={S.input} value={valName} onChange={e => setValName(e.target.value)} placeholder="e.g. Sal Martorano" /></div>
               <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-                <button style={{ ...S.btnGreen, width: '100%', opacity: (!valName || !allReviewed()) ? 0.4 : 1 }} onClick={validateAudit} disabled={!valName || !allReviewed()}>
+                <button style={{ ...S.btnGreen, width: '100%', opacity: (!valName || !allReviewed() || unanalysedPolicies().length > 0) ? 0.4 : 1 }} onClick={validateAudit} disabled={!valName || !allReviewed() || unanalysedPolicies().length > 0}>
                   ✓ Validate & Finalize Report
                 </button>
               </div>
             </div>
+            {unanalysedPolicies().length > 0 && (
+              <div style={{ fontSize: 12, color: RED, marginBottom: 6 }}>
+                ⛔ Cannot finalize: {unanalysedPolicies().map(p => p.file_name).join(', ')} did not analyse successfully.
+                A finalized report must not draw findings, gaps or an overall risk rating from a document that was never read. Re-run or remove it first.
+              </div>
+            )}
             {!allReviewed() && <div style={{ fontSize: 12, color: ORANGE }}>⚠️ Review all findings above before validating.</div>}
           </div>
         )}
