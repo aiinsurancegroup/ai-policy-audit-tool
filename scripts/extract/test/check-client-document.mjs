@@ -91,6 +91,25 @@ expect('figures are right-aligned', body.includes("textAlign: 'right'"), true);
 expect('sections cannot split across a page', body.includes('className={`pdf-keep${breakBefore'), true);
 expect('the cover stands alone', body.includes('title="Coverage Summary" breakBefore'), true);
 expect('print keeps background colours', fs.readFileSync('index.html', 'utf8').includes('print-color-adjust: exact'), true);
+expect('policy numbers never break mid-number', body.includes("wordBreak: 'break-all'"), false);
+expect('  they stay on one line', /policy_number[\s\S]{0,40}$|whiteSpace: 'nowrap'/.test(body), true);
+// Tracking wide enough to space small caps, not so wide the word comes apart.
+// The cover lockup carries the most of any element and still sits under 2.
+const tracking = [...body.matchAll(/letterSpacing: ([\d.]+)/g)].map(m => parseFloat(m[1]));
+expect('heading tracking stays readable', tracking.every(t => t <= 2), true);
+expect('  section headings tightest of all', /section: \{[^}]*letterSpacing: 0\.9/.test(body), true);
+
+console.log('\n--- the report speaks in our own voice');
+// We are the broker. A recommendation telling the client to ask their broker
+// refers them to us, and reads as though someone else handles their account.
+const forbids = server.slice(server.indexOf('NEVER write "ask your broker"'), server.indexOf('WHOSE VOICE THIS IS') + 1200);
+for (const phrase of ['ask your broker', 'your agent', 'your agency', 'an insurance professional', 'speak to your carrier']) {
+  expect(`  prompt names "${phrase}" as forbidden`, forbids.includes(phrase), true);
+}
+expect('prompt states who is writing', server.includes("written BY the client's broker"), true);
+expect('  and asks for first person plural', server.includes('We recommend'), true);
+expect('client-read notes are addressed to the client', server.includes('THE CLIENT READS THIS'), true);
+expect('  not written about them', server.includes("never 'confirm with the client'"), true);
 
 console.log('\n--- recommendations originate in Level 1');
 expect('client_recommendations produced by the server', server.includes('client_recommendations'), true);

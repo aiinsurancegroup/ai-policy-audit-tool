@@ -378,7 +378,7 @@ function ClientDocument({ audit, report, onBack }) {
   // size, one caption size. Everything on the page is one of these four.
   const T = {
     display: { fontSize: 34, fontWeight: 600, color: BRAND.navy, letterSpacing: -0.6, lineHeight: 1.15 },
-    section: { fontSize: 10, fontWeight: 700, color: BRAND.navy, letterSpacing: 2.2, textTransform: 'uppercase' },
+    section: { fontSize: 10.5, fontWeight: 700, color: BRAND.navy, letterSpacing: 0.9, textTransform: 'uppercase' },
     body: { fontSize: 11.5, lineHeight: 1.75, color: '#374151' },
     caption: { fontSize: 9.5, lineHeight: 1.7, color: '#6B7280' },
   };
@@ -403,7 +403,7 @@ function ClientDocument({ audit, report, onBack }) {
       <div style={{ flex: 1, ...T.body, fontSize: 11 }}>{detail || ''}</div>
     </div>
   );
-  const th = { padding: '0 10px 8px', fontSize: 8.5, fontWeight: 700, color: '#6B7280', letterSpacing: 1.4, textTransform: 'uppercase', textAlign: 'left', borderBottom: '1px solid ' + BRAND.navy };
+  const th = { padding: '0 8px 8px', fontSize: 8.5, fontWeight: 700, color: '#6B7280', letterSpacing: 0.6, textTransform: 'uppercase', textAlign: 'left', borderBottom: '1px solid ' + BRAND.navy };
   const cell = { padding: '10px', fontSize: 10.5, color: '#374151', verticalAlign: 'top', lineHeight: 1.5 };
 
   return (
@@ -424,7 +424,7 @@ function ClientDocument({ audit, report, onBack }) {
         <div className="pdf-keep">
           <div style={{ background: BRAND.navy, color: WHITE, padding: '34px 40px 30px' }}>
             <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: 0.3 }}>{BRAND.wordmark}</div>
-            <div style={{ fontSize: 9.5, marginTop: 7, letterSpacing: 3, textTransform: 'uppercase', color: '#9DB4CE' }}>{BRAND.subtitle}</div>
+            <div style={{ fontSize: 9.5, marginTop: 7, letterSpacing: 1.8, textTransform: 'uppercase', color: '#9DB4CE' }}>{BRAND.subtitle}</div>
           </div>
           <div style={{ padding: '96px 40px 0' }}>
             <div style={T.display}>{audit.client_name}</div>
@@ -441,7 +441,7 @@ function ClientDocument({ audit, report, onBack }) {
               column of figures right-aligned so the decimal points line up. */}
           <Section title="Coverage Summary" breakBefore>
             <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-              <colgroup><col style={{ width: '20%' }} /><col style={{ width: '15%' }} /><col style={{ width: '16%' }} /><col style={{ width: '23%' }} /><col style={{ width: '14%' }} /><col style={{ width: '12%' }} /></colgroup>
+              <colgroup><col style={{ width: '18%' }} /><col style={{ width: '14%' }} /><col style={{ width: '22%' }} /><col style={{ width: '22%' }} /><col style={{ width: '12%' }} /><col style={{ width: '12%' }} /></colgroup>
               <thead><tr>
                 {['Coverage', 'Carrier', 'Policy Number', 'Limits', 'Expires', 'Premium'].map(h =>
                   <th key={h} style={{ ...th, textAlign: h === 'Premium' ? 'right' : 'left' }}>{h}</th>)}
@@ -451,7 +451,11 @@ function ClientDocument({ audit, report, onBack }) {
                   <tr key={i} className="pdf-keep" style={{ background: i % 2 ? '#F8FAFC' : WHITE }}>
                     <td style={{ ...cell, fontWeight: 600, color: BRAND.navy }}>{r.line}</td>
                     <td style={cell}>{r.carrier_short || r.carrier || '—'}</td>
-                    <td style={{ ...cell, wordBreak: 'break-all' }}>{r.policy_number || '—'}</td>
+                    {/* A policy number is one token even when it contains a
+                        space, as in "IEPUW00315825 / 01". break-all split it
+                        mid-number, which makes it unusable for looking the
+                        policy up -- the one thing this column is for. */}
+                    <td style={{ ...cell, whiteSpace: 'nowrap', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>{r.policy_number || '—'}</td>
                     <td style={cell}>{r.key_limits || '—'}</td>
                     <td style={cell}>
                       {r.expiration_date || '—'}
