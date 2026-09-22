@@ -56,7 +56,12 @@ update audit_policies
          when 'umbrella'              then 'umbrella'
          when 'excess'                then 'umbrella'
        end
- where policy_type = 'auto'
+-- Covers both spellings of the sentinel: 'auto' from before the rename, and
+-- 'detect' from after it. A row analysed while the prompt could only answer
+-- "Other" (its type list omitted auto, umbrella, property and WC) resolves to
+-- nothing and correctly keeps the sentinel -- re-running it under the fixed
+-- prompt is what will name it, not a guess made here from a file name.
+ where policy_type in ('auto', 'detect')
    and ai_status in ('EXCLUDED','SILENT','PARTIAL','AFFIRMATIVE')
    and lower(trim(ai_raw_output->>'policy_type')) in (
          'gl','general liability','cgl','eo','e&o','professional liability',
