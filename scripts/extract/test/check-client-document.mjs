@@ -68,6 +68,30 @@ for (const phrase of ['Alexander', 'Munich Re', "Lloyd's", 'Ready to Close']) {
   expect(`  no "${phrase}"`, src.includes(phrase) && body.includes(phrase), false);
 }
 
+console.log('\n--- no upload file name can reach the client');
+// coverage_position.policy holds the file name as an internal key. The client
+// must see the carrier and policy number instead, so the raw value may never
+// be rendered and every piece of model prose must go through the scrubber.
+expect('policy key is never rendered raw', /\{p\.policy\}|\{p\.policy \}/.test(body), false);
+expect('it is resolved to carrier and number', body.includes('describePolicy(p.policy)'), true);
+expect('describePolicy reads the computed table', body.includes("table.find(r => r.file_name === fileName)"), true);
+expect('  and names carrier, line and number', /carrier_short \|\| row\.carrier/.test(body) && body.includes('row.policy_number'), true);
+expect('gap notes are scrubbed', body.includes('detail={scrub(p.note)}'), true);
+expect('recommendations are scrubbed', body.includes('{scrub(r)}'), true);
+expect('the scrubber strips the extension too', body.includes("replace(/\\.pdf$/i, '')"), true);
+expect('prompt tells the model not to name a file', server.includes('NEVER name an upload file here'), true);
+
+console.log('\n--- the design is print, not web UI');
+expect('status marks are dots, not glyphs', /borderRadius: '50%'/.test(body), true);
+expect('  no tick glyph', body.includes('✓'), false);
+expect('  no bang glyph', /'!'|>!</.test(body), false);
+expect('cover carries a navy band', body.includes('background: BRAND.navy'), true);
+expect('table rows are banded', body.includes("i % 2 ? '#F8FAFC'"), true);
+expect('figures are right-aligned', body.includes("textAlign: 'right'"), true);
+expect('sections cannot split across a page', body.includes('className={`pdf-keep${breakBefore'), true);
+expect('the cover stands alone', body.includes('title="Coverage Summary" breakBefore'), true);
+expect('print keeps background colours', fs.readFileSync('index.html', 'utf8').includes('print-color-adjust: exact'), true);
+
 console.log('\n--- recommendations originate in Level 1');
 expect('client_recommendations produced by the server', server.includes('client_recommendations'), true);
 expect('  and read by the document', body.includes('client_recommendations'), true);

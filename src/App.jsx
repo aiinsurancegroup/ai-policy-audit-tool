@@ -215,7 +215,7 @@ const AI_TYPE_TO_ID = {
   wc: 'wc', 'workers compensation': 'wc', "workers' compensation": 'wc', 'workers comp': 'wc',
   'commercial auto': 'auto_policy', auto: 'auto_policy', 'business auto': 'auto_policy', 'auto policy': 'auto_policy',
   property: 'property', bop: 'property', 'property/bop': 'property', 'businessowners': 'property',
-  umbrella: 'umbrella', excess: 'umbrella', 'umbrella/excess': 'umbrella', 'excess liability': 'umbrella',
+  umbrella: 'umbrella', excess: 'umbrella', 'umbrella/excess': 'umbrella',
 };
 const resolveDetectedType = (aiType) => {
   if (!aiType || typeof aiType !== 'string') return null;
@@ -329,6 +329,31 @@ function ClientDocument({ audit, report, onBack }) {
   const notProvided = position.filter(p => p.state === 'not_supplied');
   const recs = report?.client_recommendations || [];
 
+  // A client has never seen the upload file names and they mean nothing to
+  // them -- "2025-2026 Shamrock Materials Excess Auto Policy.pdf" is our
+  // filing, not their policy. Everything the client reads identifies a policy
+  // the way their broker would: carrier, line, policy number.
+  const describePolicy = (fileName) => {
+    const row = table.find(r => r.file_name === fileName);
+    if (!row) return null;
+    const carrier = row.carrier_short || row.carrier;
+    return [carrier, row.line].filter(Boolean).join(' ') + (row.policy_number ? `, ${row.policy_number}` : '');
+  };
+
+  // The prompt is told not to put file names in client-facing text, but a
+  // prompt is an instruction and this is a guarantee: any file name that does
+  // appear in prose is swapped for the same carrier-and-number description, so
+  // one cannot reach the client even if the model ignores the instruction.
+  const scrub = (text) => {
+    if (typeof text !== 'string') return text;
+    return table.reduce((acc, r) => {
+      if (!r.file_name) return acc;
+      const described = describePolicy(r.file_name);
+      const stem = r.file_name.replace(/\.pdf$/i, '');
+      return acc.split(r.file_name).join(described || 'the policy').split(stem).join(described || 'the policy');
+    }, text);
+  };
+
   // Dated by when the review was finalized, not by when someone opens it.
   // Using today would mean the same document printed twice carries two
   // different dates, and a client could receive a report dated later than the
@@ -348,8 +373,38 @@ function ClientDocument({ audit, report, onBack }) {
     return () => { document.title = previous; };
   }, [docTitle]);
 
-  const h2 = { fontSize: 15, fontWeight: 700, color: BRAND.navy, letterSpacing: 0.5, textTransform: 'uppercase', borderBottom: '2px solid ' + BRAND.navy, paddingBottom: 6, marginBottom: 14 };
-  const cell = { padding: '7px 8px', fontSize: 11, borderBottom: '1px solid #E5E7EB', textAlign: 'left', verticalAlign: 'top' };
+  // A deliberate type scale rather than ad-hoc sizes: one large display size
+  // for the client name, one small-caps size for section headings, one body
+  // size, one caption size. Everything on the page is one of these four.
+  const T = {
+    display: { fontSize: 34, fontWeight: 600, color: BRAND.navy, letterSpacing: -0.6, lineHeight: 1.15 },
+    section: { fontSize: 10, fontWeight: 700, color: BRAND.navy, letterSpacing: 2.2, textTransform: 'uppercase' },
+    body: { fontSize: 11.5, lineHeight: 1.75, color: '#374151' },
+    caption: { fontSize: 9.5, lineHeight: 1.7, color: '#6B7280' },
+  };
+  const rule = { borderBottom: '1px solid ' + BRAND.navy, paddingBottom: 7, marginBottom: 20 };
+  const Section = ({ title, children, breakBefore }) => (
+    <section className={`pdf-keep${breakBefore ? ' pdf-break' : ''}`} style={{ marginBottom: 44 }}>
+      <div style={{ ...T.section, ...rule }}>{title}</div>
+      {children}
+    </section>
+  );
+  // Small coloured dots carry status. Glyphs like a tick or an exclamation mark
+  // read as a web UI; a dot reads as print.
+  const Dot = ({ tone }) => (
+    <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: tone, flexShrink: 0, marginTop: 7 }} />
+  );
+  // Two columns throughout: the thing on the left, what is said about it on
+  // the right. Nothing runs on as a sentence with a dash in the middle.
+  const Row = ({ tone, label, detail, last }) => (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '9px 0', borderBottom: last ? 'none' : '1px solid #F3F4F6' }}>
+      <Dot tone={tone} />
+      <div style={{ width: 190, flexShrink: 0, fontSize: 11.5, fontWeight: 600, color: BRAND.navy, lineHeight: 1.5 }}>{label}</div>
+      <div style={{ flex: 1, ...T.body, fontSize: 11 }}>{detail || ''}</div>
+    </div>
+  );
+  const th = { padding: '0 10px 8px', fontSize: 8.5, fontWeight: 700, color: '#6B7280', letterSpacing: 1.4, textTransform: 'uppercase', textAlign: 'left', borderBottom: '1px solid ' + BRAND.navy };
+  const cell = { padding: '10px', fontSize: 10.5, color: '#374151', verticalAlign: 'top', lineHeight: 1.5 };
 
   return (
     <div style={{ background: WHITE, minHeight: '100vh' }}>
@@ -361,101 +416,103 @@ function ClientDocument({ audit, report, onBack }) {
         </div>
       </div>
 
-      <div className="pdf-doc" style={{ maxWidth: 860, margin: '0 auto', padding: '32px 28px 72px', color: '#1F2937' }}>
+      <div className="pdf-doc" style={{ maxWidth: 780, margin: '0 auto', padding: '0 0 64px', color: '#1F2937' }}>
 
-        {/* Cover */}
-        <div className="pdf-keep" style={{ textAlign: 'center', padding: '56px 0 48px', borderBottom: '3px solid ' + BRAND.navy, marginBottom: 36 }}>
-          <div style={{ fontSize: 30, fontWeight: 800, color: BRAND.navy, letterSpacing: -0.5 }}>{BRAND.wordmark}</div>
-          <div style={{ fontSize: 15, color: '#6B7280', marginTop: 8, letterSpacing: 3, textTransform: 'uppercase' }}>{BRAND.subtitle}</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: BRAND.navy, marginTop: 40 }}>{audit.client_name}</div>
-          {audit.client_industry && <div style={{ fontSize: 13, color: '#6B7280', marginTop: 6 }}>{audit.client_industry}</div>}
-          <div style={{ fontSize: 13, color: '#6B7280', marginTop: 28 }}>{longDate}</div>
-          <div style={{ fontSize: 13, color: '#374151', marginTop: 4 }}>{BRAND.preparedBy}</div>
+        {/* Cover. The navy band carries the wordmark; everything below it is
+            white space and one large name, which is what makes it read as a
+            cover page rather than the top of a web page. */}
+        <div className="pdf-keep">
+          <div style={{ background: BRAND.navy, color: WHITE, padding: '34px 40px 30px' }}>
+            <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: 0.3 }}>{BRAND.wordmark}</div>
+            <div style={{ fontSize: 9.5, marginTop: 7, letterSpacing: 3, textTransform: 'uppercase', color: '#9DB4CE' }}>{BRAND.subtitle}</div>
+          </div>
+          <div style={{ padding: '96px 40px 0' }}>
+            <div style={T.display}>{audit.client_name}</div>
+            {audit.client_industry && <div style={{ ...T.body, marginTop: 10, color: '#6B7280' }}>{audit.client_industry}</div>}
+            <div style={{ width: 54, borderBottom: '2px solid ' + BRAND.navy, margin: '32px 0 24px' }} />
+            <div style={T.caption}>{longDate}</div>
+            <div style={{ ...T.caption, color: '#374151', marginTop: 3 }}>{BRAND.preparedBy}</div>
+          </div>
         </div>
 
-        {/* Coverage summary */}
-        <div style={{ marginBottom: 32 }}>
-          <div style={h2}>Coverage Summary</div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-            <colgroup><col style={{ width: '22%' }} /><col style={{ width: '16%' }} /><col style={{ width: '16%' }} /><col style={{ width: '22%' }} /><col style={{ width: '14%' }} /><col style={{ width: '10%' }} /></colgroup>
-            <thead><tr style={{ background: '#F3F4F6' }}>
-              {['Coverage', 'Carrier', 'Policy Number', 'Limits', 'Expires', 'Premium'].map(h =>
-                <th key={h} style={{ ...cell, fontWeight: 700, color: BRAND.navy, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {table.map((r, i) => (
-                <tr key={i} className="pdf-keep">
-                  <td style={{ ...cell, fontWeight: 700, color: BRAND.navy }}>{r.line}</td>
-                  <td style={cell}>{r.carrier_short || r.carrier || '—'}</td>
-                  <td style={{ ...cell, wordBreak: 'break-all' }}>{r.policy_number || '—'}</td>
-                  <td style={cell}>{r.key_limits || '—'}</td>
-                  <td style={cell}>{r.expiration_date || '—'}{r.term_status?.state === 'expired' ? ' (expired)' : ''}</td>
-                  <td style={{ ...cell, textAlign: 'right' }}>{r.premium_total || '—'}</td>
-                </tr>
+        <div style={{ padding: '0 40px' }}>
+
+          {/* Coverage summary. Row banding instead of gridlines, and the one
+              column of figures right-aligned so the decimal points line up. */}
+          <Section title="Coverage Summary" breakBefore>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+              <colgroup><col style={{ width: '20%' }} /><col style={{ width: '15%' }} /><col style={{ width: '16%' }} /><col style={{ width: '23%' }} /><col style={{ width: '14%' }} /><col style={{ width: '12%' }} /></colgroup>
+              <thead><tr>
+                {['Coverage', 'Carrier', 'Policy Number', 'Limits', 'Expires', 'Premium'].map(h =>
+                  <th key={h} style={{ ...th, textAlign: h === 'Premium' ? 'right' : 'left' }}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {table.map((r, i) => (
+                  <tr key={i} className="pdf-keep" style={{ background: i % 2 ? '#F8FAFC' : WHITE }}>
+                    <td style={{ ...cell, fontWeight: 600, color: BRAND.navy }}>{r.line}</td>
+                    <td style={cell}>{r.carrier_short || r.carrier || '—'}</td>
+                    <td style={{ ...cell, wordBreak: 'break-all' }}>{r.policy_number || '—'}</td>
+                    <td style={cell}>{r.key_limits || '—'}</td>
+                    <td style={cell}>
+                      {r.expiration_date || '—'}
+                      {r.term_status?.state === 'expired'
+                        ? <span style={{ color: '#B91C1C', display: 'block', fontSize: 9.5 }}>expired</span>
+                        : null}
+                    </td>
+                    <td style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.premium_total || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Section>
+
+          {/* What's in place. The client sees the carrier and policy number they
+              would recognise, never the name of the file we were sent. */}
+          {inPlace.length > 0 && (
+            <Section title="Coverage In Place">
+              {inPlace.map((p, i) => (
+                <Row key={i} tone="#15803D" label={p.line} last={i === inPlace.length - 1}
+                     detail={describePolicy(p.policy) || scrub(p.note)} />
               ))}
-            </tbody>
-          </table>
-        </div>
+            </Section>
+          )}
 
-        {/* What's in place */}
-        {inPlace.length > 0 && (
-          <div className="pdf-keep" style={{ marginBottom: 32 }}>
-            <div style={h2}>Coverage In Place</div>
-            {inPlace.map((p, i) => (
-              <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.6 }}>
-                <span style={{ color: '#16A34A', fontWeight: 700 }}>✓</span>
-                <span><strong style={{ color: BRAND.navy }}>{p.line}</strong>{p.policy ? <span style={{ color: '#6B7280' }}> — {p.policy}</span> : null}</span>
-              </div>
-            ))}
+          {/* Gaps and items not provided, kept visibly distinct: one is a
+              finding, the other is a document we were never given. */}
+          {gaps.length > 0 && (
+            <Section title="Coverage Gaps">
+              <div style={{ ...T.caption, marginTop: -6, marginBottom: 6 }}>Not carried on the policies reviewed</div>
+              {gaps.map((p, i) => (
+                <Row key={i} tone="#B91C1C" label={p.line} detail={scrub(p.note)} last={i === gaps.length - 1} />
+              ))}
+            </Section>
+          )}
+
+          {notProvided.length > 0 && (
+            <Section title="Not provided for review">
+              <div style={{ ...T.caption, marginTop: -6, marginBottom: 6 }}>Please confirm whether these are in force</div>
+              {notProvided.map((p, i) => (
+                <Row key={i} tone="#9CA3AF" label={p.line} detail={scrub(p.note)} last={i === notProvided.length - 1} />
+              ))}
+            </Section>
+          )}
+
+          {recs.length > 0 && (
+            <Section title="Recommendations">
+              {recs.map((r, i) => (
+                <div key={i} className="pdf-keep" style={{ display: 'flex', gap: 14, alignItems: 'flex-start', padding: '9px 0', borderBottom: i === recs.length - 1 ? 'none' : '1px solid #F3F4F6' }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: BRAND.navy, minWidth: 16, lineHeight: 1.75 }}>{i + 1}</span>
+                  <span style={T.body}>{scrub(r)}</span>
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {/* Basis, in small grey type. A box with a border would give it the
+              weight of a finding; it is a qualification, not a finding. */}
+          <div className="pdf-keep" style={{ ...T.caption, borderTop: '1px solid #E5E7EB', paddingTop: 14 }}>
+            <span style={{ color: '#374151', fontWeight: 600 }}>Basis of this review. </span>{BASIS_NOTE}
           </div>
-        )}
-
-        {/* Gaps and items not provided, kept visibly distinct: one is a finding,
-            the other is a document we were never given. */}
-        {(gaps.length > 0 || notProvided.length > 0) && (
-          <div className="pdf-keep" style={{ marginBottom: 32 }}>
-            <div style={h2}>Coverage Gaps &amp; Items Not Provided</div>
-            {gaps.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#B91C1C', marginBottom: 8 }}>Not carried on the policies reviewed</div>
-                {gaps.map((p, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.6 }}>
-                    <span style={{ color: '#B91C1C', fontWeight: 700 }}>!</span>
-                    <span><strong style={{ color: BRAND.navy }}>{p.line}</strong>{p.note ? <span style={{ color: '#6B7280' }}> — {p.note}</span> : null}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {notProvided.length > 0 && (
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#6B7280', marginBottom: 8 }}>Not provided for review — please confirm whether these are in force</div>
-                {notProvided.map((p, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 8, fontSize: 12, lineHeight: 1.6 }}>
-                    <span style={{ color: '#6B7280', fontWeight: 700 }}>?</span>
-                    <span><strong style={{ color: BRAND.navy }}>{p.line}</strong>{p.note ? <span style={{ color: '#6B7280' }}> — {p.note}</span> : null}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Recommendations */}
-        {recs.length > 0 && (
-          <div style={{ marginBottom: 32 }}>
-            <div style={h2}>Recommendations</div>
-            {recs.map((r, i) => (
-              <div key={i} className="pdf-keep" style={{ display: 'flex', gap: 12, marginBottom: 12, fontSize: 12, lineHeight: 1.7 }}>
-                <span style={{ color: BRAND.navy, fontWeight: 700, minWidth: 18 }}>{i + 1}.</span>
-                <span>{r}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Basis */}
-        <div className="pdf-keep" style={{ padding: 16, background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: 6, fontSize: 10.5, lineHeight: 1.7, color: '#4B5563' }}>
-          <strong style={{ color: BRAND.navy }}>Basis of this review. </strong>{BASIS_NOTE}
         </div>
       </div>
 

@@ -21,6 +21,10 @@
            licence number in a footer has to do. */
         .pdf-footer { position: fixed; bottom: 0; left: 0; right: 0; }
         .pdf-doc { padding: 0 !important; }
+        /* Browsers drop background colours when printing unless told not to.
+           The navy cover band and the table's row banding are the design, not
+           decoration, so they have to survive the trip to PDF. */
+        .pdf-doc, .pdf-doc * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       }
       @page { size: A4; margin: 14mm 14mm 20mm; }
     </style>

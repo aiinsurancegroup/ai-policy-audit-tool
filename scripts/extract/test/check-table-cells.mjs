@@ -42,6 +42,10 @@ expect('labelled total wins', mod.premiumTotal('Total Policy Premium: $4,976'), 
 expect('fee alongside is excluded', mod.premiumTotal('$4,961 plus NJPLIGA $15'), '$4,961');
 expect('parenthetical stripped', mod.premiumTotal('$12,500 (includes $300 terrorism)'), '$12,500');
 expect('bare figure passes through', mod.premiumTotal('$8,200.00'), '$8,200.00');
+expect('USD prefix (the APD case)', mod.premiumTotal('USD 13,313.00'), '$13,313.00');
+expect('US$ prefix', mod.premiumTotal('US$9,500'), '$9,500');
+expect('USD with a labelled total', mod.premiumTotal('Total Premium USD 13,313.00'), '$13,313.00');
+expect('labelled total with no symbol at all', mod.premiumTotal('Total Policy Premium 7,412.50'), '$7,412.50');
 expect('no figure -> null', mod.premiumTotal('not shown on the declarations'), 'null');
 expect('null in, null out', mod.premiumTotal(null), 'null');
 

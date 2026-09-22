@@ -141,12 +141,19 @@ function shortCarrier(full) {
 // The premium total as printed: no fees, no parentheticals. A labelled total
 // wins; otherwise the largest figure, which excludes a surcharge listed
 // alongside the premium rather than adding it in.
+// Amounts are written more ways than one: "$13,313.00", "USD 13,313.00",
+// "US$13,313". Matching only the dollar sign left a real premium blank on the
+// auto physical damage policy, which reads as "no premium" rather than "we did
+// not parse it". Output is normalised to a dollar figure for the table.
 function premiumTotal(s) {
   if (!s || typeof s !== "string") return null;
+  // Built per call rather than shared at module scope: a /g regex carries
+  // lastIndex, and one shared across calls is a bug waiting to happen.
+  const amount = /(?:US\$|USD\s*|\$)\s?([\d,]+(?:\.\d{1,2})?)/gi;
   const stripped = s.replace(/\([^)]*\)/g, " ");
-  const labelled = stripped.match(/total[^$]{0,30}\$\s?([\d,]+(?:\.\d{2})?)/i);
+  const labelled = stripped.match(/total[^\d$]{0,30}(?:US\$|USD\s*|\$)?\s?([\d,]+(?:\.\d{1,2})?)/i);
   if (labelled) return "$" + labelled[1];
-  const amounts = [...stripped.matchAll(/\$\s?([\d,]+(?:\.\d{2})?)/g)].map((m) => m[1]);
+  const amounts = [...stripped.matchAll(amount)].map((m) => m[1]);
   if (!amounts.length) return null;
   const biggest = amounts.reduce((a, b) => (parseFloat(b.replace(/,/g, "")) > parseFloat(a.replace(/,/g, "")) ? b : a));
   return "$" + biggest;
@@ -442,9 +449,9 @@ RESPOND ONLY with this JSON:
 
   "program_synthesis": [{"finding": "a program-level point drawn from the per-policy analyses together", "evidence": "which policies and what in them", "severity": "HIGH|MODERATE|LOW"}],
 
-  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "which file provides it, when present; the failed file name, when unread; otherwise null", "note": "for not_supplied, what to confirm with the client"}],
+  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. For not_supplied, what to confirm with the client. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
 
-  "client_recommendations": ["4-8 recommendations in plain language, written to be read BY THE CLIENT. No jargon, no internal sales angles, no figures the documents do not show, and never a premium saving or estimate. Each should say what to do and why it matters in one or two sentences. These appear in the client-facing document, so write them as advice to the client, not as notes to the agent."],
+  "client_recommendations": ["4-8 recommendations in plain language, written to be read BY THE CLIENT. No jargon, no internal sales angles, no figures the documents do not show, and never a premium saving or estimate. Each should say what to do and why it matters in one or two sentences. Refer to a policy by its carrier and line -- 'the General Star excess auto policy' -- NEVER by an upload file name, which the client has never seen. These appear in the client-facing document, so write them as advice to the client, not as notes to the agent."],
 
   "agent_notes": {"lead_hook": "one sentence opening a conversation about this PROGRAM", "primary_opportunity": "the single strongest angle across the whole account", "talking_points": ["3-5 points about the program, not one policy"], "urgency": ["what is time-sensitive, measured against TODAY'S DATE"]}
 }
