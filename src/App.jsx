@@ -1117,55 +1117,102 @@ export default function App() {
             {progErr && <div style={{ fontSize: 12, color: RED, marginTop: 8, lineHeight: 1.5 }}>{progErr}</div>}
             {progReport && (
               <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid ' + LIGHT_GRAY }}>
-                {progReport.program_summary && <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6, marginBottom: 12 }}>{progReport.program_summary}</div>}
 
-                {progReport.lines?.length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Coverage Lines</div>
-                    {progReport.lines.map((l, i) => {
-                      const tone = l.state === 'present' ? GREEN : l.state === 'absent' ? RED : MID_GRAY;
-                      const label = l.state === 'present' ? 'PRESENT' : l.state === 'absent' ? 'ABSENT' : l.state === 'failed_unread' ? 'UNREAD' : 'NOT SUPPLIED';
+                {/* Policy table. Every column but limits/deductibles is computed
+                    server-side from the extracted data. */}
+                {progReport.policy_table?.length > 0 && (
+                  <div style={{ marginBottom: 16, overflowX: 'auto' }}>
+                    <div style={S.sec}>Policy Table</div>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
+                      <thead>
+                        <tr style={{ textAlign: 'left', color: MID_GRAY, borderBottom: '1px solid ' + LIGHT_GRAY }}>
+                          {['Line', 'Carrier', 'Policy Number', 'Key Limits', 'Deductibles', 'Term', 'Verdict', 'Premium'].map(h => (
+                            <th key={h} style={{ padding: '6px 8px', fontWeight: 700, whiteSpace: 'nowrap' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {progReport.policy_table.map((row, i) => {
+                          const ts = row.term_status || {};
+                          const termTone = ts.state === 'expired' ? RED : ts.state === 'expiring' ? ORANGE : ts.state === 'in_force' ? GREEN : MID_GRAY;
+                          return (
+                            <tr key={i} style={{ borderBottom: '1px solid ' + LIGHT_GRAY, verticalAlign: 'top' }}>
+                              <td style={{ padding: '8px', fontWeight: 700, color: NAVY }}>{row.line}
+                                <div style={{ fontWeight: 400, color: MID_GRAY, fontSize: 11 }}>{row.file_name}</div></td>
+                              <td style={{ padding: '8px' }}>{row.carrier || <span style={{ color: MID_GRAY }}>not extracted</span>}</td>
+                              <td style={{ padding: '8px' }}>{row.policy_number || <span style={{ color: MID_GRAY }}>—</span>}</td>
+                              <td style={{ padding: '8px' }}>{row.key_limits || <span style={{ color: MID_GRAY }}>not extracted</span>}</td>
+                              <td style={{ padding: '8px' }}>{row.deductibles || <span style={{ color: MID_GRAY }}>—</span>}</td>
+                              <td style={{ padding: '8px', color: termTone, fontWeight: 600, whiteSpace: 'nowrap' }}>{ts.label || '—'}</td>
+                              <td style={{ padding: '8px' }}>{row.ai_verdict?.label || row.ai_verdict?.status}</td>
+                              <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>{row.premium_as_shown || <span style={{ color: MID_GRAY }}>not shown</span>}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Program findings: computed first, then the model's synthesis.
+                    The order is the point -- the arithmetic is not an opinion. */}
+                {(progReport.program_findings?.computed?.length > 0 || progReport.program_findings?.synthesis?.length > 0) && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={S.sec}>Program Findings</div>
+                    {progReport.program_findings.computed?.map((f, i) => (
+                      <div key={'c' + i} style={{ padding: 12, background: WHITE, borderRadius: 6, border: '1px solid ' + LIGHT_GRAY, borderLeft: '3px solid ' + NAVY, marginBottom: 6 }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                          <span style={{ ...S.tag, background: '#EEF2FF', color: NAVY }}>COMPUTED</span>
+                          <span style={{ ...S.tag, background: LIGHT_GOLD, color: NAVY }}>{f.type}</span>
+                          <span style={{ ...S.tag, background: f.severity === 'HIGH' ? '#FEE2E2' : f.severity === 'MODERATE' ? '#FEF3C7' : '#F3F4F6', color: f.severity === 'HIGH' ? RED : f.severity === 'MODERATE' ? ORANGE : MID_GRAY }}>{f.severity}</span>
+                        </div>
+                        <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{f.finding}</div>
+                        {f.evidence && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4, lineHeight: 1.5 }}>{f.evidence}</div>}
+                      </div>
+                    ))}
+                    {progReport.program_findings.synthesis?.map((f, i) => (
+                      <div key={'s' + i} style={{ padding: 12, background: WHITE, borderRadius: 6, border: '1px solid ' + LIGHT_GRAY, marginBottom: 6 }}>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                          <span style={{ ...S.tag, background: f.severity === 'HIGH' ? '#FEE2E2' : f.severity === 'MODERATE' ? '#FEF3C7' : '#F3F4F6', color: f.severity === 'HIGH' ? RED : f.severity === 'MODERATE' ? ORANGE : MID_GRAY }}>{f.severity || 'LOW'}</span>
+                        </div>
+                        <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{f.finding}</div>
+                        {f.evidence && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4, lineHeight: 1.5 }}>{f.evidence}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Coverage position: the four states. */}
+                {progReport.coverage_position?.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={S.sec}>Coverage Position</div>
+                    {progReport.coverage_position.map((l, i) => {
+                      const tone = l.state === 'present' ? GREEN : l.state === 'absent' ? RED : l.state === 'unread' ? ORANGE : MID_GRAY;
+                      const label = l.state === 'present' ? 'PRESENT' : l.state === 'absent' ? 'ABSENT' : l.state === 'unread' ? 'UNREAD' : 'NOT SUPPLIED';
                       return (
-                        <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 6, fontSize: 13, lineHeight: 1.5 }}>
-                          <span style={{ ...S.tag, background: tone === GREEN ? '#F0FDF4' : tone === RED ? '#FEF2F2' : '#F3F4F6', color: tone, minWidth: 104, textAlign: 'center', flexShrink: 0 }}>{label}</span>
-                          <span><strong>{l.line}</strong>{l.evidence ? <span style={{ color: MID_GRAY }}> — {l.evidence}</span> : null}</span>
+                        <div key={i} style={{ display: 'flex', gap: 10, marginBottom: 6, fontSize: 13, lineHeight: 1.5, alignItems: 'flex-start' }}>
+                          <span style={{ ...S.tag, background: tone === GREEN ? '#F0FDF4' : tone === RED ? '#FEF2F2' : tone === ORANGE ? '#FFFBEB' : '#F3F4F6', color: tone, minWidth: 112, textAlign: 'center', flexShrink: 0 }}>{label}</span>
+                          <span><strong>{l.line}</strong>
+                            {l.policy && <span style={{ color: MID_GRAY }}> — {l.policy}</span>}
+                            {l.note && <span style={{ color: MID_GRAY }}> — {l.note}</span>}
+                          </span>
                         </div>
                       );
                     })}
                   </div>
                 )}
 
-                {progReport.cross_policy_findings?.length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Cross-Policy Findings</div>
-                    {progReport.cross_policy_findings.map((f, i) => (
-                      <div key={i} style={{ padding: 12, background: WHITE, borderRadius: 6, border: '1px solid ' + LIGHT_GRAY, marginBottom: 6 }}>
-                        <div style={{ display: 'flex', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-                          <span style={{ ...S.tag, background: LIGHT_GOLD, color: NAVY }}>{f.category}</span>
-                          <span style={{ ...S.tag, background: f.severity === 'HIGH' ? '#FEE2E2' : f.severity === 'MODERATE' ? '#FEF3C7' : '#F3F4F6', color: f.severity === 'HIGH' ? RED : f.severity === 'MODERATE' ? ORANGE : MID_GRAY }}>{f.severity}</span>
-                        </div>
-                        <div style={{ fontSize: 13, color: NAVY, lineHeight: 1.5 }}>{f.finding}</div>
-                        {f.evidence && <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 4, lineHeight: 1.5 }}>Evidence: {f.evidence}</div>}
-                        {f.recommendation && <div style={{ fontSize: 12, color: '#333', marginTop: 4, lineHeight: 1.5 }}>→ {f.recommendation}</div>}
-                      </div>
+                {/* Internal. Level 3 strips this entirely. */}
+                {progReport.agent_notes && (
+                  <div style={{ padding: 14, background: '#F9FAFB', borderRadius: 8, border: '1px dashed ' + MID_GRAY }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>🔒 Agent Notes — Internal Only, Never Shown To The Client</div>
+                    {progReport.agent_notes.lead_hook && <div style={{ fontSize: 13, color: NAVY, fontWeight: 600, marginBottom: 6, lineHeight: 1.5 }}>{progReport.agent_notes.lead_hook}</div>}
+                    {progReport.agent_notes.primary_opportunity && <div style={{ fontSize: 13, color: '#333', marginBottom: 8, lineHeight: 1.5 }}>{progReport.agent_notes.primary_opportunity}</div>}
+                    {progReport.agent_notes.talking_points?.length > 0 && progReport.agent_notes.talking_points.map((t, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: 12, lineHeight: 1.5 }}><span style={{ color: GOLD }}>•</span><span>{t}</span></div>
                     ))}
-                  </div>
-                )}
-
-                {progReport.expired_or_expiring?.length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Expired / Expiring</div>
-                    {progReport.expired_or_expiring.map((e, i) => (
-                      <div key={i} style={{ fontSize: 13, color: ORANGE, lineHeight: 1.5, marginBottom: 3 }}>⏱ {e}</div>
-                    ))}
-                  </div>
-                )}
-
-                {progReport.questions_for_client?.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: MID_GRAY, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6 }}>Ask The Client</div>
-                    {progReport.questions_for_client.map((q, i) => (
-                      <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 4, fontSize: 13, lineHeight: 1.5 }}><span style={{ color: MID_GRAY }}>?</span><span>{q}</span></div>
+                    {progReport.agent_notes.urgency?.length > 0 && progReport.agent_notes.urgency.map((u, i) => (
+                      <div key={'u' + i} style={{ fontSize: 12, color: ORANGE, marginTop: 4, lineHeight: 1.5 }}>⏱ {u}</div>
                     ))}
                   </div>
                 )}

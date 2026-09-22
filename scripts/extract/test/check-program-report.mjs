@@ -20,6 +20,7 @@ let policyRows = [];
 let anthropicCalled = false;
 let inserted = null;
 let anthropicResponse = null;
+let lastPrompt = null;
 
 globalThis.fetch = async (url, init) => {
   const u = String(url);
@@ -32,9 +33,15 @@ globalThis.fetch = async (url, init) => {
   }
   if (u.includes('api.anthropic.com')) {
     anthropicCalled = true;
+    lastPrompt = JSON.parse(init.body);
     return anthropicResponse ?? {
       ok: true, status: 200,
-      json: async () => ({ model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ program_summary: 'ok', lines: [], cross_policy_findings: [], questions_for_client: [], expired_or_expiring: [] }) }] }),
+      json: async () => ({ model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+        policy_limits: [{ file_name: 'gl.pdf', key_limits: '$1M/$2M', deductibles: '$10,000' }],
+        program_synthesis: [{ finding: 'a program point', evidence: 'x', severity: 'HIGH' }],
+        coverage_position: [{ line: 'General Liability', state: 'present', policy: 'gl.pdf', note: null }],
+        agent_notes: { lead_hook: 'hook', primary_opportunity: 'opp', talking_points: ['a'], urgency: ['b'] },
+      }) }] }),
       text: async () => '',
     };
   }
@@ -147,6 +154,51 @@ const up = await call();
 expect('upstream 401 -> 502, never our 401', up.statusCode, 502);
 expect('  upstream status preserved', up.body.upstream_status, 401);
 anthropicResponse = null;
+
+// --- Level 1 output shape ---------------------------------------------------
+policyRows = [
+  policy({ file_name: 'gl.pdf', policy_type: 'gl', ai_status: 'SILENT', expiration_date: '2027-01-01' }),
+  policy({ file_name: 'old.pdf', policy_type: 'auto_policy', ai_status: 'EXCLUDED', effective_date: '2024-01-01', expiration_date: '2025-01-01' }),
+];
+const lvl = await call({ body: { audit_id: 'a1', today: '2026-06-15' } });
+const r = lvl.body.result;
+expect('result is Level 1', r.level, 1);
+expect('policy_table has a row per policy', r.policy_table.length, 2);
+expect('line label is human-readable', r.policy_table[0].line, 'General Liability');
+expect('term status computed: in force', r.policy_table[0].term_status.state, 'in_force');
+expect('term status computed: expired', r.policy_table[1].term_status.state, 'expired');
+expect('expired row says when', r.policy_table[1].term_status.label, 'Expired 2025-01-01');
+expect('verdict is spelled out, not "AI"', r.policy_table[0].ai_verdict.label, 'Silent on artificial intelligence');
+expect('limits merged from the model by file name', r.policy_table[0].key_limits, '$1M/$2M');
+expect('deductibles merged too', r.policy_table[0].deductibles, '$10,000');
+expect('limits null where the model gave none', r.policy_table[1].key_limits, 'null');
+expect('computed findings come from code', r.program_findings.computed.length > 0, true);
+expect('expired-under-in-force is computed', r.program_findings.computed.some(f => f.type === 'TERM_ALIGNMENT'), true);
+expect('synthesis comes from the model', r.program_findings.synthesis[0].finding, 'a program point');
+expect('coverage_position carried through', r.coverage_position[0].state, 'present');
+expect('agent_notes present for internal use', r.agent_notes.lead_hook, 'hook');
+
+// The model must not be able to overwrite a computed fact.
+anthropicResponse = {
+  ok: true, status: 200,
+  json: async () => ({ model: 'm', stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({
+    policy_table: [{ line: 'FABRICATED', carrier: 'Fake Co' }],
+    program_findings: { computed: [{ finding: 'fabricated computed finding' }] },
+    policy_limits: [], program_synthesis: [], coverage_position: [], agent_notes: null,
+  }) }] }),
+  text: async () => '',
+};
+const spoof = await call({ body: { audit_id: 'a1', today: '2026-06-15' } });
+expect('a model-supplied policy_table is ignored', spoof.body.result.policy_table[0].line, 'General Liability');
+expect('a model-supplied computed finding is ignored', spoof.body.result.program_findings.computed.every(f => f.finding !== 'fabricated computed finding'), true);
+anthropicResponse = null;
+
+// The prompt must carry the writing rule and the computed facts.
+policyRows = [policy()];
+await call({ body: { audit_id: 'a1', today: '2026-06-15' } });
+expect('prompt forbids "AI" for additional insured', lastPrompt.system.includes('additional insured'), true);
+expect("prompt supplies today's date", lastPrompt.messages[0].content.includes('2026-06-15'), true);
+expect('prompt supplies the computed policy table', lastPrompt.messages[0].content.includes('POLICY TABLE'), true);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
