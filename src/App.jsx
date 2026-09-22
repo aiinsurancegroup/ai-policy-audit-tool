@@ -1921,9 +1921,12 @@ export default function App() {
         )}
 
         <div style={{ ...S.card, background: NAVY, color: WHITE, textAlign: 'center', padding: 36 }}>
-          <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Ready to Close These Gaps?</div>
-          <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.6)', maxWidth: 500, margin: '0 auto 20px' }}>
-            The AI Insurance Group works with Lloyd's, Munich Re, and specialty AI liability markets to place affirmative coverage.
+          {/* Neutral by design. This block previously opened with "Ready to
+              Close These Gaps?" and named specific markets, which reads as a
+              solicitation on a document whose whole purpose is an impartial
+              coverage review. */}
+          <div style={{ fontSize: 15, color: 'rgba(255,255,255,0.85)', maxWidth: 560, margin: '0 auto 20px', lineHeight: 1.7 }}>
+            Questions about this report? Contact The AI Insurance Group — sal@theaiinsurancegroup.com · 917-981-0245.
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }} className="no-print">
             {/* The client document. Only after Validate & Finalize, and only
@@ -1949,7 +1952,6 @@ export default function App() {
         <div style={{ textAlign: 'center', marginTop: 16, fontSize: 11, color: MID_GRAY, lineHeight: 1.6 }}>
           This analysis was generated using AI-assisted document review{!isDraft && a.validated_by ? ' and validated by ' + a.validated_by : ''}.
           It is not a coverage determination. Final coverage interpretations should be confirmed with the issuing carrier.
-          The AI Insurance Group provides coverage gap identification services through Alexander Capital Insurance.
         </div>
       </div>
     </div>);
