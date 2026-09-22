@@ -1196,10 +1196,36 @@ export default function App() {
                 <div><div style={{ fontSize: 18, fontWeight: 700 }}>{ti?.label || pol.policy_type}</div>
                 <div style={{ fontSize: 12, color: MID_GRAY }}>{pol.file_name}{pol.carrier ? ' • ' + pol.carrier : ''}</div></div>
               </div>
-              <div style={S.badge(pol.risk_level || pol.ai_status)}>
-                {pol.ai_status === 'EXCLUDED' ? '⛔ AI EXCLUDED' : pol.ai_status === 'SILENT' ? '⚠️ SILENT' : pol.ai_status === 'PARTIAL' ? '🔶 PARTIAL' : pol.ai_status === 'AFFIRMATIVE' ? '✅ COVERED' : pol.ai_status === 'ERROR' ? '❌ ERROR' : '❓ UNKNOWN'}
+              {/* This badge had a case for ERROR but none for FAILED, so once
+                  migration 03 renamed the status every failed policy fell
+                  through to "UNKNOWN" -- the verdict meaning "read, and not an
+                  insurance policy". The status list at the top of the report was
+                  fixed; this badge deeper in the body was missed, so the same
+                  document was described two different ways on one screen. It now
+                  uses the shared helpers, so it cannot drift again. */}
+              <div style={S.badge(isFailed(pol.ai_status) ? 'MODERATE' : (pol.risk_level || pol.ai_status))}>
+                {isFailed(pol.ai_status) ? '⚠️ ANALYSIS FAILED'
+                  : isPending(pol.ai_status) ? '⏳ NOT ANALYSED'
+                  : pol.ai_status === 'EXCLUDED' ? '⛔ AI EXCLUDED'
+                  : pol.ai_status === 'SILENT' ? '⚠️ SILENT'
+                  : pol.ai_status === 'PARTIAL' ? '🔶 PARTIAL'
+                  : pol.ai_status === 'AFFIRMATIVE' ? '✅ COVERED'
+                  : '❓ NOT A POLICY'}
               </div>
             </div>
+
+            {/* A failed policy has no findings, gaps or recommendations to show,
+                so the card below would render as a policy with nothing wrong
+                with it. Say what actually happened instead. */}
+            {isFailed(pol.ai_status) && (
+              <div style={{ padding: 16, background: '#FFFBEB', borderRadius: 8, border: '1px solid ' + ORANGE, marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: ORANGE, marginBottom: 6 }}>This document was not analysed</div>
+                <div style={{ fontSize: 13, color: '#333', lineHeight: 1.6 }}>{failureReason(pol)}</div>
+                <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 8, lineHeight: 1.6 }}>
+                  Nothing below is derived from this document, and its absence from the findings is not evidence that it contains none. Re-run it before finalizing, or remove it from the audit.
+                </div>
+              </div>
+            )}
 
             {out.summary && <div style={{ padding: 16, background: LIGHT_GOLD, borderRadius: 8, fontSize: 14, lineHeight: 1.7, marginBottom: 16, borderLeft: '3px solid ' + GOLD }}>{out.summary}</div>}
 
