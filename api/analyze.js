@@ -29,8 +29,9 @@
 // PDF from storage server-side instead of through a request body, which removes
 // the body-size ceiling entirely; that is the next piece of work.
 //
-// Open item: the model string below is a generation behind. Left alone so this
-// change stays a security fix.
+// MODEL COMPARISON IN PROGRESS: currently pointed at claude-opus-5. The next
+// step is to run the same policy against claude-sonnet-5 and compare findings
+// before production settles on one. See max_tokens below before changing it.
 //
 // What each failure means, because two of them used to be the same number:
 //   401  the CALLER's admin password is missing or wrong
@@ -130,8 +131,15 @@ export default async function handler(req, res) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4000,
+        model: 'claude-opus-5',
+        // Raised from 4000 with the model change, and the two are linked. The
+        // retired claude-sonnet-4 did not think before answering, so 4000 was
+        // all answer. Current models reason first by default and that reasoning
+        // counts against max_tokens, so 4000 could be spent thinking and return
+        // a truncated fragment -- or nothing -- with no error to show for it.
+        // 16000 leaves room for the reasoning and the JSON, and stays well
+        // inside the 120s maxDuration this function is given in vercel.json.
+        max_tokens: 16000,
         system: system || '',
         messages,
       }),
@@ -154,6 +162,12 @@ export default async function handler(req, res) {
     }
 
     const data = await response.json();
+    // A truncated answer is not valid JSON, so the browser's JSON.parse throws
+    // and the UI shows the same generic failure it shows for everything else.
+    // Say so in the log, where it can be seen, rather than letting it hide.
+    if (data.stop_reason === 'max_tokens') {
+      console.error('[analyze] response hit max_tokens and is truncated; raise max_tokens or lower effort');
+    }
     return res.status(200).json(data);
   } catch (error) {
     return res.status(500).json({ error: 'Server error', message: error.message });
