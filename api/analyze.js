@@ -64,6 +64,40 @@ function isAllowedOrigin(origin, req) {
 }
 
 export default async function handler(req, res) {
+  // ---------------------------------------------------------------------
+  // TEMPORARY DIAGNOSTIC -- remove before merging to main.
+  //
+  // A preview run returned 401 from this endpoint while /api/admin/audit
+  // succeeded milliseconds either side with the same password and the same
+  // header, which can only happen if the header did not arrive. This records
+  // whether it arrived and how long it was. It never records the password
+  // itself, and never the env var's length -- only whether the two lengths
+  // agree. Header NAMES are listed (values are not) to show what the request
+  // actually carried.
+  {
+    const sent = req.headers['x-admin-password'];
+    const expected = process.env.AUDIT_ADMIN_PASSWORD;
+    console.log('[analyze-diag] ' + JSON.stringify({
+      method: req.method,
+      headerArrived: typeof sent === 'string',
+      headerLength: typeof sent === 'string' ? sent.length : null,
+      envConfigured: typeof expected === 'string' && expected.length > 0,
+      lengthsMatch: typeof sent === 'string' && typeof expected === 'string'
+        ? sent.length === expected.length
+        : null,
+      valuesMatch: typeof sent === 'string' && typeof expected === 'string'
+        ? sent === expected
+        : null,
+      origin: req.headers.origin ?? null,
+      host: req.headers.host ?? null,
+      xForwardedHost: req.headers['x-forwarded-host'] ?? null,
+      referer: req.headers.referer ?? null,
+      contentLength: req.headers['content-length'] ?? null,
+      headerNames: Object.keys(req.headers).sort().join(' '),
+    }));
+  }
+  // ---------------------------------------------------------------------
+
   const origin = req.headers.origin;
   const originOk = isAllowedOrigin(origin, req);
 
