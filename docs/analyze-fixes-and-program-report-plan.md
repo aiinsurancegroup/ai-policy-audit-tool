@@ -192,6 +192,56 @@ refuse and name it rather than reporting that line absent.
 
 ---
 
+---
+
+## Branch 3 — server-side PDF reads, after the program report ships
+
+### Why
+
+A 9.89MB Auto Physical Damage policy failed with "Document too large to
+analyse". The limit it hit is **bytes**, not pages or tokens, and it is not ours
+to raise:
+
+| Limit | Value | Effect |
+|---|---|---|
+| `MAX_BODY_BYTES` in `api/analyze.js` | 4MB | would reject it |
+| **Vercel request body** | **4.5MB** | **platform cap, rejects before our function runs** |
+| Anthropic request | 32MB | would have accepted the file |
+
+The PDF is base64-encoded into the request body, which adds ~33%, so the
+practical ceiling today is about a **3MB PDF** — against an Anthropic limit of
+32MB. The document is not too large to analyse; it is too large to *post*.
+
+### What changes
+
+1. **The server reads the PDF from Supabase storage** rather than receiving it
+   in the request body. `api/analyze.js` takes a `storage_path`, fetches the
+   object with the service role key, and forwards it to Anthropic. The file
+   never crosses the request boundary, so the 4.5MB cap stops applying and the
+   real ceiling becomes Anthropic's 32MB.
+
+2. **Admin uploads must save to storage first.** This is the part that is
+   larger than it sounds: `storage_path` is null on every admin-uploaded row,
+   because `runAudit` streams the file straight to the API and never stores it.
+   Only client-portal uploads persist. Until that changes, a failed admin upload
+   cannot be re-run at all — the document is simply gone, which is why ten of
+   the twelve FAILED rows found earlier were unrecoverable.
+
+Both halves are needed for either to be worth much: server-side reads without
+stored files only helps portal uploads, and stored files without server-side
+reads still hit the 4.5MB cap.
+
+### Watch for
+
+- `api/client/portal.js` already accepts 25MB uploads, so storage already holds
+  files this path cannot currently analyse. That mismatch closes here.
+- Deleting an `audit_policies` row will start orphaning a storage object; today
+  it cannot, because nothing is stored.
+- The 120s → 300s function duration matters more once larger documents actually
+  reach the model.
+
+---
+
 ## Migrations requiring sign-off
 
 1. `ERROR` → `FAILED` on `audit_policies.ai_status` (Branch 1)
