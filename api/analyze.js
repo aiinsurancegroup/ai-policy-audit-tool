@@ -31,6 +31,12 @@
 //
 // Open item: the model string below is a generation behind. Left alone so this
 // change stays a security fix.
+//
+// What each failure means, because two of them used to be the same number:
+//   401  the CALLER's admin password is missing or wrong
+//   403  the request did not come from this deployment's own origin
+//   413  the request body is too large
+//   502  OUR upstream call to Anthropic failed; upstream_status says how
 
 // Vercel rejects bodies over 4.5MB before this handler runs, so this cap sits
 // under that and is the number we can actually explain to a caller. A PDF is
@@ -133,7 +139,18 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      return res.status(response.status).json({ error: `API error: ${response.status}`, details: errorText });
+      // Never forward the upstream status verbatim. Doing so made OUR credential
+      // failing (Anthropic 401) indistinguishable from the CALLER's password
+      // failing (our own 401) -- the two are answered by the same endpoint with
+      // the same code, and a week of production failures read as a login problem.
+      // A failure on the far side of this endpoint is a bad gateway, whatever
+      // the far side called it. The upstream status stays in the body.
+      console.error(`[analyze] upstream Anthropic call failed with ${response.status}: ${errorText.slice(0, 300)}`);
+      return res.status(502).json({
+        error: 'Upstream API request failed',
+        upstream_status: response.status,
+        details: errorText.slice(0, 500),
+      });
     }
 
     const data = await response.json();
