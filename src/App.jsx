@@ -1323,36 +1323,53 @@ export default function App() {
                 {/* Policy table. Every column but limits/deductibles is computed
                     server-side from the extracted data. */}
                 {progReport.policy_table?.length > 0 && (
-                  <div style={{ marginBottom: 16, overflowX: 'auto' }}>
+                  <div style={{ marginBottom: 16 }}>
                     <div style={S.sec}>Policy Table</div>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
+                    {/* Fixed layout with explicit widths, so the table fits the
+                        screen instead of scrolling sideways. Anything that can
+                        overrun is truncated with the full value on hover; the
+                        long forms live in Level 2. */}
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, tableLayout: 'fixed' }}>
+                      <colgroup>
+                        <col style={{ width: '20%' }} /><col style={{ width: '11%' }} /><col style={{ width: '13%' }} />
+                        <col style={{ width: '19%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} />
+                        <col style={{ width: '8%' }} /><col style={{ width: '7%' }} />
+                      </colgroup>
                       <thead>
                         <tr style={{ textAlign: 'left', color: MID_GRAY, borderBottom: '1px solid ' + LIGHT_GRAY }}>
-                          {['Line', 'Carrier', 'Policy Number', 'Key Limits', 'Deductibles', 'Term', 'Verdict', 'Premium'].map(h => (
-                            <th key={h} style={{ padding: '6px 8px', fontWeight: 700, whiteSpace: 'nowrap' }}>{h}</th>
+                          {['Line', 'Carrier', 'Policy No.', 'Key Limits', 'Deductible', 'Term', 'Verdict', 'Premium'].map(h => (
+                            <th key={h} style={{ padding: '6px 6px', fontWeight: 700, whiteSpace: 'nowrap', fontSize: 11 }}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
                         {progReport.policy_table.map((row, i) => {
                           const ts = row.term_status || {};
-                          const termTone = ts.state === 'expired' ? RED : ts.state === 'expiring' ? ORANGE : ts.state === 'in_force' ? GREEN : MID_GRAY;
+                          const dot = ts.state === 'expired' ? RED : ts.state === 'expiring' ? ORANGE : ts.state === 'in_force' ? GREEN : MID_GRAY;
+                          const clip = { padding: '7px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+                          const none = (t = '—') => <span style={{ color: MID_GRAY }}>{t}</span>;
                           return (
-                            <tr key={i} style={{ borderBottom: '1px solid ' + LIGHT_GRAY, verticalAlign: 'top' }}>
-                              <td style={{ padding: '8px', fontWeight: 700, color: NAVY }}>{row.line}
-                                <div style={{ fontWeight: 400, color: MID_GRAY, fontSize: 11 }}>{row.file_name}</div></td>
-                              <td style={{ padding: '8px' }}>{row.carrier || <span style={{ color: MID_GRAY }}>not extracted</span>}</td>
-                              <td style={{ padding: '8px' }}>{row.policy_number || <span style={{ color: MID_GRAY }}>—</span>}</td>
-                              <td style={{ padding: '8px' }}>{row.key_limits || <span style={{ color: MID_GRAY }}>not extracted</span>}</td>
-                              <td style={{ padding: '8px' }}>{row.deductibles || <span style={{ color: MID_GRAY }}>—</span>}</td>
-                              <td style={{ padding: '8px', color: termTone, fontWeight: 600, whiteSpace: 'nowrap' }}>{ts.label || '—'}</td>
-                              <td style={{ padding: '8px' }}>{row.ai_verdict?.label || row.ai_verdict?.status}</td>
-                              <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>{row.premium_as_shown || <span style={{ color: MID_GRAY }}>not shown</span>}</td>
+                            <tr key={i} style={{ borderBottom: '1px solid ' + LIGHT_GRAY }}>
+                              <td style={{ ...clip, fontWeight: 700, color: NAVY }} title={row.file_name}>{row.line}</td>
+                              <td style={clip} title={row.carrier || ''}>{row.carrier_short || row.carrier || none('—')}</td>
+                              <td style={clip} title={row.policy_number || ''}>{row.policy_number || none()}</td>
+                              <td style={clip} title={row.key_limits || ''}>{row.key_limits || none()}</td>
+                              <td style={clip} title={row.deductibles || ''}>{row.deductibles || none()}</td>
+                              <td style={{ ...clip, fontWeight: 600 }} title={ts.label || ''}>
+                                <span style={{ color: dot, marginRight: 5 }}>●</span>{row.expiration_date || none()}
+                              </td>
+                              <td style={clip} title={row.ai_verdict?.label || ''}>{row.ai_verdict?.short || row.ai_verdict?.status}</td>
+                              <td style={{ ...clip, textAlign: 'right' }} title={row.premium_as_shown || ''}>{row.premium_total || none()}</td>
                             </tr>
                           );
                         })}
                       </tbody>
                     </table>
+                    <div style={{ fontSize: 10, color: MID_GRAY, marginTop: 6 }}>
+                      <span style={{ color: GREEN }}>●</span> in force &nbsp;
+                      <span style={{ color: ORANGE }}>●</span> renews within 90 days &nbsp;
+                      <span style={{ color: RED }}>●</span> expired &nbsp;· hover any cell for the full value
+                    </div>
                   </div>
                 )}
 

@@ -109,6 +109,55 @@ function termStatus(effective, expiration, today) {
   return { state: "in_force", label: `In force to ${expiration}`, days_until: days };
 }
 
+// Carrier short names for the table; the full legal name stays on the row for
+// Level 2. There is no mechanical rule -- "National Union Fire Insurance
+// Company of Pittsburgh, Pa. (AIG)" shortens to its parenthetical, while
+// "Ironshore Specialty Insurance Company (Liberty Mutual)" shortens to its
+// prefix and the parenthetical must be ignored. So: a known-carrier list
+// first, then a heuristic, and the full name if neither fits.
+const CARRIER_SHORT = [
+  [/lloyd/i, "Lloyd's"], [/national union fire|\bAIG\b/i, "AIG"],
+  [/hanover/i, "Hanover"], [/ironshore/i, "Ironshore"],
+  [/general star/i, "General Star"], [/travelers/i, "Travelers"],
+  [/chubb|federal insurance/i, "Chubb"], [/hartford/i, "The Hartford"],
+  [/zurich/i, "Zurich"], [/\bCNA\b|continental casualty/i, "CNA"],
+  [/liberty mutual/i, "Liberty Mutual"], [/berkley/i, "W.R. Berkley"],
+  [/markel/i, "Markel"], [/state farm/i, "State Farm"],
+  [/philadelphia/i, "Philadelphia"], [/cincinnati/i, "Cincinnati"],
+  [/nationwide/i, "Nationwide"], [/selective/i, "Selective"],
+];
+const FILLER = /\b(the|insurance|indemnity|specialty|surplus|fire|marine|casualty|mutual|company|companies|corporation|corp|co|group|underwriters|at|of|and|America|American)\b/gi;
+
+function shortCarrier(full) {
+  if (!full || typeof full !== "string") return null;
+  for (const [re, name] of CARRIER_SHORT) if (re.test(full)) return name;
+  const paren = full.match(/\(([^)]+)\)/);
+  if (paren && paren[1].length <= 6 && paren[1] === paren[1].toUpperCase()) return paren[1];
+  const base = full.replace(/\([^)]*\)/g, " ").replace(FILLER, " ").replace(/[,.]/g, " ").replace(/\s+/g, " ").trim();
+  const words = base.split(" ").filter(Boolean).slice(0, 2).join(" ");
+  return words || full;
+}
+
+// The premium total as printed: no fees, no parentheticals. A labelled total
+// wins; otherwise the largest figure, which excludes a surcharge listed
+// alongside the premium rather than adding it in.
+function premiumTotal(s) {
+  if (!s || typeof s !== "string") return null;
+  const stripped = s.replace(/\([^)]*\)/g, " ");
+  const labelled = stripped.match(/total[^$]{0,30}\$\s?([\d,]+(?:\.\d{2})?)/i);
+  if (labelled) return "$" + labelled[1];
+  const amounts = [...stripped.matchAll(/\$\s?([\d,]+(?:\.\d{2})?)/g)].map((m) => m[1]);
+  if (!amounts.length) return null;
+  const biggest = amounts.reduce((a, b) => (parseFloat(b.replace(/,/g, "")) > parseFloat(a.replace(/,/g, "")) ? b : a));
+  return "$" + biggest;
+}
+
+// Short enough for a cell. The full phrase stays in ai_verdict.label.
+const VERDICT_SHORT = {
+  EXCLUDED: "Excluded", SILENT: "Silent", PARTIAL: "Partial",
+  AFFIRMATIVE: "Affirmative", UNKNOWN: "Not a policy",
+};
+
 const VERDICT_LABELS = {
   EXCLUDED: "Artificial-intelligence exclusion found",
   SILENT: "Silent on artificial intelligence",
@@ -128,13 +177,15 @@ function buildPolicyTable(policies, today) {
       file_name: p.file_name,
       line: lineLabel(p.policy_type),
       policy_type: p.policy_type,
-      carrier: p.carrier || raw.carrier || null,
+      carrier: p.carrier || raw.carrier || null,                    // full, for Level 2
+      carrier_short: shortCarrier(p.carrier || raw.carrier),        // for the table
       policy_number: p.policy_number || raw.policy_number || null,
       effective_date: p.effective_date || raw.effective_date || null,
       expiration_date: p.expiration_date || raw.expiration_date || null,
       term_status: termStatus(p.effective_date || raw.effective_date, p.expiration_date || raw.expiration_date, today),
-      ai_verdict: { status: p.ai_status, label: VERDICT_LABELS[p.ai_status] || p.ai_status },
-      premium_as_shown: raw.agent_opportunities?.premium_as_shown ?? null,
+      ai_verdict: { status: p.ai_status, label: VERDICT_LABELS[p.ai_status] || p.ai_status, short: VERDICT_SHORT[p.ai_status] || p.ai_status },
+      premium_as_shown: raw.agent_opportunities?.premium_as_shown ?? null,   // verbatim, for Level 2
+      premium_total: premiumTotal(raw.agent_opportunities?.premium_as_shown), // the figure alone
       // Filled from the model's reading of its own per-policy analysis, merged
       // in after the call. Null until then.
       key_limits: null,
@@ -333,7 +384,7 @@ The POLICY TABLE and the COMPUTED FINDINGS are built from the extracted data bef
 
 RESPOND ONLY with this JSON:
 {
-  "policy_limits": [{"file_name": "exact file name from the policy table", "key_limits": "the principal limits as the analysis recorded them, e.g. '$1M occurrence / $2M aggregate', or null if not extracted", "deductibles": "deductibles or retentions as recorded, or null"}],
+  "policy_limits": [{"file_name": "exact file name from the policy table", "key_limits": ["AT MOST 3 headline figures, each a SHORT token, no prose and no sentences: '$1M CSL', '$500K SUM', '$2M xs $1M', '$1M / $2M agg'. Omit anything that will not fit a narrow table cell. Empty array if none were extracted."], "deductibles": "a short token such as '$10K' or '$25K comp/coll', not a sentence. null if none."}],
 
   "program_synthesis": [{"finding": "a program-level point drawn from the per-policy analyses together", "evidence": "which policies and what in them", "severity": "HIGH|MODERATE|LOW"}],
 
@@ -450,8 +501,15 @@ export default async function handler(req, res) {
     // computed one, so the report cannot drift from the extracted data.
     for (const row of policyTable) {
       const supplied = (model.policy_limits || []).find((l) => l.file_name === row.file_name);
-      row.key_limits = supplied?.key_limits ?? null;
-      row.deductibles = supplied?.deductibles ?? null;
+      // Capped at three and joined here rather than trusting the instruction:
+      // the table has to fit on one screen, and a model returning a fourth
+      // figure or a sentence would quietly break that.
+      const limits = Array.isArray(supplied?.key_limits)
+        ? supplied.key_limits.filter((x) => typeof x === "string" && x.trim()).slice(0, 3).map((x) => x.trim())
+        : typeof supplied?.key_limits === "string" && supplied.key_limits.trim() ? [supplied.key_limits.trim()] : [];
+      row.key_limits = limits.length ? limits.join(" · ") : null;
+      const ded = typeof supplied?.deductibles === "string" ? supplied.deductibles.trim() : null;
+      row.deductibles = ded && ded.length <= 40 ? ded : (ded ? ded.slice(0, 40) + "…" : null);
     }
 
     const result = {
