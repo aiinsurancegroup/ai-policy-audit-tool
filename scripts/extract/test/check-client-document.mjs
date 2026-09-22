@@ -46,7 +46,13 @@ expect('prepared by', src.includes("preparedBy: 'Prepared by Sal Martorano'"), t
 expect('licence number in footer', src.includes('NJ Insurance Producer License No. 3004245927'), true);
 expect('contact email', src.includes('sal@theaiinsurancegroup.com'), true);
 expect('phone', src.includes('917-981-0245'), true);
-expect('brand navy', src.includes("navy: '#0F2847'"), true);
+// Navy and gold come from the logo artwork itself rather than being retyped,
+// so the document cannot drift out of register with the mark.
+const logo = fs.readFileSync('src/BrandLogo.jsx', 'utf8');
+expect('brand navy is the logo navy', logo.includes("BRAND_NAVY = '#121E2D'"), true);
+expect('brand gold is the logo gold', logo.includes("BRAND_GOLD = '#B8972A'"), true);
+expect('  the document imports them, not copies', src.includes('navy: BRAND_NAVY') && src.includes('gold: BRAND_GOLD'), true);
+expect('  the old navy is gone', src.includes('#0F2847'), false);
 
 console.log('\n--- the required sections');
 for (const section of ['Coverage Summary', 'Coverage In Place', 'Coverage Gaps', 'Recommendations', 'Basis of this review']) {
@@ -85,7 +91,13 @@ console.log('\n--- the design is print, not web UI');
 expect('status marks are dots, not glyphs', /borderRadius: '50%'/.test(body), true);
 expect('  no tick glyph', body.includes('✓'), false);
 expect('  no bang glyph', /'!'|>!</.test(body), false);
-expect('cover carries a navy band', body.includes('background: BRAND.navy'), true);
+expect('cover carries the logo, not a text wordmark', /<BrandLogo tone="light" width=\{180\}/.test(body), true);
+expect('footer carries a small logo', /<BrandLogo tone="light" width=\{86\}/.test(body), true);
+expect('section rules are gold', body.includes("borderBottom: '1px solid ' + BRAND.gold"), true);
+expect('section headings are gold', /section: \{[^}]*color: BRAND\.gold/.test(body), true);
+expect('expired terms are muted red', body.includes('TERM_EXPIRED'), true);
+expect('  in-force muted green', body.includes('TERM_INFORCE'), true);
+expect('  neither is the app UI signal colour', /TERM_EXPIRED = '#9B2C2C'/.test(src) && /TERM_INFORCE = '#2F6B4F'/.test(src), true);
 expect('table rows are banded', body.includes("i % 2 ? '#F8FAFC'"), true);
 expect('figures are right-aligned', body.includes("textAlign: 'right'"), true);
 expect('sections cannot split across a page', body.includes('className={`pdf-keep${breakBefore'), true);
@@ -98,6 +110,32 @@ expect('  they stay on one line', /policy_number[\s\S]{0,40}$|whiteSpace: 'nowra
 const tracking = [...body.matchAll(/letterSpacing: ([\d.]+)/g)].map(m => parseFloat(m[1]));
 expect('heading tracking stays readable', tracking.every(t => t <= 2), true);
 expect('  section headings tightest of all', /section: \{[^}]*letterSpacing: 0\.9/.test(body), true);
+
+console.log('\n--- the logo is inlined, not linked');
+// A linked asset is a network fetch, and a browser printing to PDF will
+// produce the page without it -- silently dropping the logo from a client
+// deliverable. Inlined artwork cannot fail that way.
+expect('no <img> in the document', /<img\b/.test(body), false);
+expect('no url() reference', /url\(/.test(body), false);
+expect('artwork is real SVG paths', (logo.match(/<path /g) || []).length >= 5, true);
+expect('  with no embedded raster', /base64|<image/.test(logo), false);
+expect('  and no live text', /<text/.test(logo), false);
+// One copy of the artwork, one variable fill. Two copies could drift apart.
+expect('one copy of the artwork', (logo.match(/viewBox="0 0 280 52"/g) || []).length, 1);
+expect('  ink is the only variable', logo.includes("const ink = tone === 'dark' ? '#FFFFFF' : BRAND_NAVY"), true);
+
+console.log('\n--- the cover block and summary lines');
+expect('prepared for renders only when supplied', body.includes('(audit.named_insured || audit.mailing_address)'), true);
+expect('  named insured', body.includes('{audit.named_insured}'), true);
+expect('  address keeps its line breaks', body.includes("whiteSpace: 'pre-line'"), true);
+for (const line of ['Policies reviewed', 'Gaps identified', 'Next renewal']) {
+  expect(`  summary line: ${line}`, body.includes(line), true);
+}
+expect('counts are computed, not stated', body.includes('String(table.length)') && body.includes('String(gaps.length)'), true);
+// An expired date is not a renewal to plan for; showing one would be worse
+// than showing nothing.
+expect('next renewal excludes expired terms', body.includes("r.term_status?.state !== 'expired'"), true);
+expect('  and takes the soonest', body.includes('upcoming[0]'), true);
 
 console.log('\n--- the report speaks in our own voice');
 // We are the broker. A recommendation telling the client to ask their broker
