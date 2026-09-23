@@ -311,10 +311,22 @@ function constrainAbsent(position, policyTable) {
     const election = electionStatus(p?.line, suppliedTypes, policyTable.length);
 
     // "not_supplied" means we cannot know. For an election declined on a host
-    // policy we are holding, we do know: the document says so. This is the one
-    // place anything here claims MORE than the model did, and it is confined to
-    // a line that can only exist on that policy, a host actually in the audit,
-    // and a note that states the decline outright.
+    // policy we are holding, we do know: the document says so.
+    //
+    // THIS IS THE ONLY PLACE IN THIS FILE THAT RAISES A CLAIM, AND IT IS AN
+    // EXCEPTION, NOT A PRECEDENT. Every other guard here may only ever claim
+    // less than the model did -- a wrong downgrade costs a question, a wrong
+    // upgrade puts a false statement in front of a client. This one is allowed
+    // because all three conditions together leave nothing unknown: the line can
+    // exist ONLY as an election on a host policy, that host policy is in this
+    // audit, and the note states the decline outright. Any one of them missing
+    // and the answer is not established.
+    //
+    // Do not copy this shape to another guard. A future upgrade needs the same
+    // three-part conjunction -- a line whose only possible home we hold, plus
+    // document evidence of the answer -- and the owner's explicit approval
+    // before it ships. Loosening any leg of it is how a report starts telling
+    // clients they lack cover they hold.
     if (p?.state === "not_supplied" && election === "has_host" && DECLINED.test(p.note || "")) {
       upgraded.push(p.line);
       return { ...p, state: "absent" };

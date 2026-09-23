@@ -158,6 +158,12 @@ expect('no upgrade for a standalone line', constrainAbsent(
   [{ line: 'Cyber Liability', state: 'not_supplied', note: 'The cyber coverage part was declined.' }], glOnly
 ).position[0].state, 'not_supplied');
 expect('the server logs upgrades too', src.includes('not_supplied -> absent, declined election'), true);
+// The upgrade is a deliberate exception and the code has to say so, or the
+// next person to need one copies the shape without the conjunction behind it.
+expect('it is marked as the only claim-raising guard', src.includes('THIS IS THE ONLY PLACE IN THIS FILE THAT RAISES A CLAIM'), true);
+expect('  and as an exception, not a precedent', src.includes('AN\n    // EXCEPTION, NOT A PRECEDENT') || src.includes('EXCEPTION, NOT A PRECEDENT'), true);
+expect('  with the bar any future one must clear', src.includes('three-part conjunction'), true);
+expect('  including approval before it ships', src.includes("owner's explicit approval"), true);
 
 console.log('\n--- the two guards compose');
 // A standalone line whose note says declined should end on not_supplied, not
