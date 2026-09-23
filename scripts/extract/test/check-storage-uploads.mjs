@@ -89,6 +89,18 @@ for (const [label, re] of [
 expect('replace moves the path with the file', app.includes('storage_path: storagePath }'), true);
 expect('re-run needs no download', /rerunPolicy[\s\S]{0,400}download_policy/.test(app), false);
 
+console.log('\n--- re-run is offered on every stored row, not only failed ones');
+// A prompt change is a reason to re-run a policy that succeeded, so the action
+// row is no longer gated on the row having failed.
+expect('actions are not gated on failure', app.includes('{failed2 && (\n                    <div style={{ display'), false);
+expect('  they are gated on the audit being a draft', /\{isDraft && \(\s*<div style=\{\{ display: 'flex', gap: 6, justifyContent: 'flex-end'/.test(app), true);
+expect('re-run still requires a stored document', /\{pol\.storage_path \? \([\s\S]{0,300}rerunPolicy/.test(app), true);
+expect('  and says so plainly when there is none', app.includes('not stored — cannot re-run'), true);
+// A re-run replaces the findings, and review state is keyed by position.
+expect('a re-run clears that row"s review state', app.includes('const stale = new RegExp(`^${idx}-`)'), true);
+expect('  both actions and notes', /setFActions\(prev[\s\S]{0,200}setFNotes\(prev/.test(app), true);
+expect('  found by id, not by stale index', app.includes('pols.findIndex(p => p.id === pol.id)'), true);
+
 console.log('\n--- size limits agree across the three places that enforce them');
 expect('portal', portal.includes('MAX_FILE_BYTES = 25 * 1024 * 1024'), true);
 expect('admin endpoint', audit.includes('MAX_FILE_BYTES = 25 * 1024 * 1024'), true);

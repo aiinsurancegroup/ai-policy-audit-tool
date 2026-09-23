@@ -1137,7 +1137,18 @@ export default function App() {
       if (!upd.ok) { setRowErr('Analysis finished but the result could not be saved.'); return; }
       await logActivity(adminPw, curAudit.id, fileName ? 'POLICY_FILE_REPLACED' : 'POLICY_RERUN',
         { file: fileName || pol.file_name, status: payload.ai_status, ...(isFailed(payload.ai_status) ? { failure: result.failure?.message } : {}) }, 'operator');
-      await refreshAfterPolicyChange(curAudit.id);
+      const pols = await refreshAfterPolicyChange(curAudit.id);
+      // The run produced a new set of findings, so any review of the old set is
+      // meaningless. Review state is keyed by position, so leaving it would
+      // carry a confirmation from a finding that no longer exists onto whatever
+      // now sits at that index -- and the row's validation_status has just been
+      // reset to PENDING, so the two would disagree.
+      const idx = pols.findIndex(p => p.id === pol.id);
+      if (idx >= 0) {
+        const stale = new RegExp(`^${idx}-`);
+        setFActions(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => !stale.test(k))));
+        setFNotes(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => !stale.test(k))));
+      }
       if (isFailed(payload.ai_status)) setRowErr(`${fileName || pol.file_name}: ${failureReason({ ai_raw_output: result })}`);
     } finally {
       setRowBusy(null);
@@ -1673,29 +1684,35 @@ export default function App() {
                 <div style={{ fontSize: 13, fontWeight: 600, color: isValid ? GREEN : failed2 ? ORANGE : RED, textAlign: 'right', maxWidth: 320 }}>
                   {outcomeText}
                   {failed2 && !isPending(st2) && <div style={{ fontSize: 11, fontWeight: 400, color: MID_GRAY, marginTop: 2 }}>Nothing was read from this document.</div>}
-                  {/* A failed row is actionable in place: same audit, same row,
-                      so the audit does not collect one fossil per attempt.
-                      Re-run appears only when the document was actually stored
-                      -- admin uploads stream straight to the API and keep
-                      nothing, so for those rows the file is gone and Replace is
-                      the only honest option. */}
-                  {failed2 && (
+                  {/* Every row is actionable in place, not just a failed one:
+                      same audit, same row, so the audit does not collect one
+                      fossil per attempt. A successful row is worth re-running
+                      after a prompt change, and worth replacing when the wrong
+                      document was uploaded and only noticed once it analysed.
+
+                      Draft only. A re-run resets the row to PENDING validation,
+                      and doing that under a finalized audit would leave the
+                      stored program report and the client document describing
+                      an analysis that no longer exists, while the audit still
+                      read VALIDATED. Changing a finalized audit's inputs should
+                      be a deliberate act, not a button next to every row. */}
+                  {isDraft && (
                     <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 6, flexWrap: 'wrap' }}>
                       <button
-                        style={S.actionBtn(!!rowBusy, { small: true, primary: true })}
+                        style={S.actionBtn(!!rowBusy, { small: true, primary: failed2 })}
                         disabled={!!rowBusy}
                         onClick={() => { replaceTarget.current = pol; setRowErr(''); replaceRef.current?.click(); }}>
                         {rowBusy === pol.id ? 'Working…' : '↑ Replace file'}
                       </button>
                       {pol.storage_path ? (
                         <button
-                          style={S.actionBtn(!!rowBusy, { small: true })}
+                          style={S.actionBtn(!!rowBusy, { small: true, primary: !failed2 })}
                           disabled={!!rowBusy}
                           onClick={() => rerunPolicy(pol)}>
                           ↻ Re-run
                         </button>
                       ) : (
-                        <span style={{ fontSize: 10, fontWeight: 400, color: MID_GRAY, alignSelf: 'center' }} title="Only documents uploaded through a client portal link are stored.">
+                        <span style={{ fontSize: 10, fontWeight: 400, color: MID_GRAY, alignSelf: 'center' }} title="Documents uploaded before storage was added were not kept. Replace the file to store it.">
                           not stored — cannot re-run
                         </span>
                       )}
