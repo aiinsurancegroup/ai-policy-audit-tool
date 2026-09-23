@@ -209,6 +209,62 @@ function buildPolicyTable(policies, today) {
 //
 // Entirely computed. Where a figure is missing the state says so; nothing here
 // infers adequacy from silence.
+// Which policy types could carry a given line, keyed by a word in the line
+// name. An empty array means no policy type in this system carries that line --
+// it is only ever written standalone, so unless that standalone policy was
+// supplied, its absence cannot be established from anything else.
+//
+// The point of the table is one rule: a line can only be called absent if we
+// were actually given the kind of policy that would carry it. A general
+// liability policy declining its cyber coverage part says the line is not on
+// THAT policy; it is silent on whether the client buys cyber from someone else.
+const LINE_HOST_TYPES = [
+  [/\bcyber|data breach|privacy\b/i, ["cyber"]],
+  [/employment practices|\bepli\b/i, ["epli"]],
+  [/professional|errors? (and|&) omissions|\be ?& ?o\b|design.?build/i, ["eo"]],
+  [/directors|\bd ?& ?o\b/i, ["do"]],
+  [/workers.? comp|employers liability/i, ["wc"]],
+  [/pollution|environmental/i, []],
+  [/crime|employee dishonesty|fidelity/i, []],
+  [/cargo/i, []],
+  [/umbrella|excess/i, ["umbrella", "excess_auto"]],
+  [/\bauto|vehicle|fleet/i, ["auto_policy", "excess_auto", "auto_physical_damage"]],
+  [/property|building|business income|inland marine|equipment/i, ["property"]],
+  [/general liability|premises|products/i, ["gl", "products"]],
+];
+
+// Downgrade "absent" to "not_supplied" wherever the documents cannot support
+// it. Downgrade only, never the reverse: this can make the report claim less
+// than the model wanted, never more, so a misfire costs a question rather than
+// a false statement to a client.
+//
+// This exists because the prompt alone has been wrong here twice. Telling a
+// client they have no cyber cover, on the strength of a liability policy that
+// was never going to carry cyber, is the most damaging thing this field can do.
+function constrainAbsent(position, policyTable) {
+  const suppliedTypes = new Set(policyTable.map((r) => r.policy_type).filter(Boolean));
+  const downgraded = [];
+  const constrained = position.map((p) => {
+    if (p?.state !== "absent" || typeof p.line !== "string") return p;
+    const entry = LINE_HOST_TYPES.find(([re]) => re.test(p.line));
+    // A line this table does not recognise is left alone: the prompt governs
+    // it, and guessing at an unmapped line would be its own kind of error.
+    if (!entry) return p;
+    const hostTypes = entry[1];
+    if (hostTypes.some((t) => suppliedTypes.has(t))) return p;
+    downgraded.push(p.line);
+    const note = typeof p.note === "string" && p.note.trim() ? p.note.trim().replace(/[.\s]+$/, "") : "";
+    return {
+      ...p,
+      state: "not_supplied",
+      note: note
+        ? `${note} — tell us whether you hold a standalone policy for this, or we can quote it.`
+        : "We were not given a policy that would carry this line — tell us whether you hold one.",
+    };
+  });
+  return { position: constrained, downgraded };
+}
+
 function limitAdequacy(policyTable, crossChecks) {
   const layers = crossChecks.underlying_vs_umbrella.map((u) => {
     const top = policyTable.find((r) => r.file_name === u.umbrella_file);
@@ -450,7 +506,7 @@ RESPOND ONLY with this JSON:
 
   "program_synthesis": [{"finding": "a program-level point drawn from the per-policy analyses together", "evidence": "which policies and what in them", "severity": "HIGH|MODERATE|LOW"}],
 
-  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague -- never 'confirm with the client'. Write the note the STATE calls for, and do not let one state's phrasing bleed into another: for absent, say what the documents show is not carried ('The only excess you hold responds to auto claims; nothing sits above your general liability limits'); for not_supplied, say what we need from them ('We don't have this on file -- send us the current declarations'); for present, one clause on what it is and any term or carve-out worth knowing. A note ending in 'send us...' on a line you marked absent means you picked the wrong state. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
+  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague -- never 'confirm with the client'. Write the note the STATE calls for, and do not let one state's phrasing bleed into another: for absent, say what the documents rule out program-wide ('Your excess policy excludes hired and non-owned autos by endorsement, so nothing sits above them'); for not_supplied where a coverage part was declined on a policy we hold, say BOTH -- what the document shows and what we still need ('Site pollution was not purchased on your liability policy; tell us whether you hold a standalone environmental policy'); for not_supplied where nothing speaks to the line at all, just ask ('We don't have this on file -- send us the current declarations'); for present, one clause on what it is and any term or carve-out worth knowing. A note ending in 'send us...' on a line you marked absent means you picked the wrong state. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
 
   "client_recommendations": ["4-8 recommendations in plain language, written to be read BY THE CLIENT. No jargon, no internal sales angles, no figures the documents do not show, and never a premium saving or estimate. Each should say what to do and why it matters in one or two sentences. Refer to a policy by its carrier and line -- 'the General Star excess auto policy' -- NEVER by an upload file name, which the client has never seen. These appear in the client-facing document, so write them as advice to the client, not as notes to the agent. Written in OUR voice as their broker -- 'We recommend raising...', 'We'll confirm the underlying limits with General Star...' -- never 'ask your broker' or 'your agent', because we ARE their broker and there is nobody else to ask."],
 
@@ -462,10 +518,16 @@ program_synthesis: 5-8 points. Program-level only -- if a point is true of one p
 coverage_position: cover every line of business you can see evidence about, plus any a supplied policy refers to.
 
 The absent/not_supplied split is the whole point of this pass, and BOTH directions of error are real:
-- "absent" means the supplied documents affirmatively show the coverage is not carried: a coverage part marked not purchased or not offered, an exclusion that removes the line outright, or a tower whose only excess layer responds to a different line than the one asked about. This is a genuine gap and the client is reading this report to find it. Marking such a line "not_supplied" buries the finding they came for and makes us look like we did not read the documents we were sent.
-- "not_supplied" means no document we were given speaks to the line at all, so we cannot know. Marking such a line "absent" claims knowledge we do not have and costs the client's trust in the whole report.
 
-The test is what the documents show, NOT how cautious you feel. Do not default a whole list to one state: a program of five policies will normally produce several of each. Only where the evidence genuinely does not settle it does doubt resolve to "not_supplied".
+- "absent" means the SUPPLIED DOCUMENTS RULE THE LINE OUT ACROSS THE WHOLE PROGRAM -- not merely off one policy. The test: is there any policy the client could plausibly hold, which we were not shown, that would carry this line? If yes, it is NOT absent. Absent is for a line that could only live at a layer we were actually given and is excluded there -- excess hired and non-owned auto struck by endorsement on the only excess policy in the program, for instance. That is a genuine gap, the client is reading this report to find it, and burying it as not_supplied makes us look like we did not read what we were sent.
+
+- "not_supplied" means the documents we hold do not settle it. This INCLUDES the most common case by far: a coverage part shown as not purchased or not offered on a policy we were given. That tells us the line is not on THAT policy. It tells us nothing about whether the client buys it standalone from another carrier -- cyber, EPLI, pollution and professional liability are overwhelmingly written standalone, so a liability policy declining those parts is not evidence the client has no such cover. Say what the document shows and ask the question: "Your liability policy does not include this coverage part -- tell us whether you hold a standalone policy, or we can quote it."
+
+A COVERAGE PART NOT PURCHASED ON A SUPPLIED POLICY IS "not_supplied", NOT "absent". Marking it absent tells a client to their face that they have no cyber cover when the policy naming that gap was never the policy that would carry it. That is the single most damaging error this field can make, and it is the one to watch for.
+
+Weigh how much of the program you were actually given. A single-policy audit can almost never support "absent" for a standalone line: one document cannot rule out a policy it would never have mentioned. A full program submission supports it far more often, because the absence of a layer across every policy in a complete set is itself evidence.
+
+The test is what the documents show, NOT how cautious you feel, and not a quota: some audits genuinely produce no "absent" at all, and a report of five not_supplied lines and no absent is a correct report if that is what the evidence supports.
 
 agent_notes are INTERNAL and are stripped from anything the client sees.`;
 
@@ -587,6 +649,14 @@ export default async function handler(req, res) {
       row.deductibles = ded && ded.length <= 40 ? ded : (ded ? ded.slice(0, 40) + "…" : null);
     }
 
+    const constrained = constrainAbsent(
+      Array.isArray(model.coverage_position) ? model.coverage_position : [],
+      policyTable
+    );
+    if (constrained.downgraded.length) {
+      console.log(`[program-report] downgraded absent -> not_supplied for ${constrained.downgraded.length} line(s): ${constrained.downgraded.join("; ")}`);
+    }
+
     const result = {
       level: 1,
       generated_for_date: todayStr,
@@ -598,7 +668,10 @@ export default async function handler(req, res) {
         computed,
         synthesis: Array.isArray(model.program_synthesis) ? model.program_synthesis : [],
       },
-      coverage_position: Array.isArray(model.coverage_position) ? model.coverage_position : [],
+      // Constrained in code, not only asked for in the prompt: an "absent" a
+      // single supplied policy cannot support is downgraded before it is
+      // stored, so it can never reach the client document.
+      coverage_position: constrained.position,
       // Client-facing, and the only recommendations the client document may
       // show. Kept in Level 1 because the client PDF renders from this row and
       // makes no call of its own -- so anything it prints has to originate here.
