@@ -137,6 +137,30 @@ expect('counts are computed, not stated', body.includes('String(table.length)') 
 expect('next renewal excludes expired terms', body.includes("r.term_status?.state !== 'expired'"), true);
 expect('  and takes the soonest', body.includes('upcoming[0]'), true);
 
+console.log('\n--- absent and not_supplied stay distinct');
+// A one-sided exemplar collapsed this once already: the note field demonstrated
+// an output shape for not_supplied and for no other state, and the model
+// pattern-matched an entire program into it -- burying a real gap the earlier
+// run had found. Every state that appears in a client section gets an exemplar,
+// or none does.
+const noteField = server.slice(server.indexOf('"note": "one short clause'), server.indexOf('"client_recommendations"'));
+expect('absent has a worked exemplar', noteField.includes('for absent, say what the documents show is not carried'), true);
+expect('not_supplied has one too', noteField.includes('for not_supplied, say what we need from them'), true);
+expect('  and present', noteField.includes('for present, one clause'), true);
+expect('the tell-tale is named', noteField.includes("A note ending in 'send us...' on a line you marked absent"), true);
+// The standing rule pushed only one way: it warned what a wrong "absent" costs
+// and never what a wrong "not_supplied" costs.
+expect('both directions of error are stated', server.includes('BOTH directions of error are real'), true);
+expect('  burying a real gap is named a failure', server.includes('buries the finding they came for'), true);
+expect('  claiming unknown absence still is too', server.includes('claims knowledge we do not have'), true);
+expect('evidence decides, not caution', server.includes('The test is what the documents show, NOT how cautious you feel'), true);
+expect('  and a whole list may not default to one state', server.includes('Do not default a whole list to one state'), true);
+
+console.log('\n--- the render keeps the two apart');
+expect('gaps read the absent state', body.includes("position.filter(p => p.state === 'absent')"), true);
+expect('not-provided reads its own', body.includes("position.filter(p => p.state === 'not_supplied')"), true);
+expect('  they are separate sections', body.includes('title="Coverage Gaps"') && body.includes('title="Not provided for review"'), true);
+
 console.log('\n--- the report speaks in our own voice');
 // We are the broker. A recommendation telling the client to ask their broker
 // refers them to us, and reads as though someone else handles their account.
