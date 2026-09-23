@@ -21,13 +21,19 @@
 // portal never calls it: clients upload documents through api/client/portal.js
 // and the operator analyses them afterwards.
 //
-// Open item, deliberately not fixed here: api/client/portal.js accepts uploads
-// up to 25MB, and runAuditFromStorage sends those documents base64-encoded
-// (~33% larger) through this endpoint's body. Anything over roughly 3MB has
-// always failed -- Vercel rejects the body before this handler runs. The cap
-// below only makes that failure legible. The fix is for extraction to read the
-// PDF from storage server-side instead of through a request body, which removes
-// the body-size ceiling entirely; that is the next piece of work.
+// The PDF does not travel in the request body. The caller sends a storage_path
+// and this function reads the bytes from Supabase storage with the service key,
+// which is what removed the old ~3MB ceiling: the body used to carry the
+// document base64-encoded, and Vercel rejected it at 4.5MB before this handler
+// ever ran.
+//
+// Two routes out to Anthropic, chosen by size:
+//   <= INLINE_MAX_BYTES  base64 inside the request, as before
+//   >  INLINE_MAX_BYTES  uploaded to the Files API and referenced by file_id
+// The second exists because a request caps at 32MB and base64 costs 4/3, while
+// the Files API takes raw multipart and caps at 500MB. An uploaded file is
+// deleted in a finally block and also carries an expiry, so a client's policy
+// document does not outlive the request that needed it.
 //
 // MODEL COMPARISON IN PROGRESS: currently pointed at claude-opus-5. The next
 // step is to run the same policy against claude-sonnet-5 and compare findings
@@ -37,13 +43,94 @@
 //   401  the CALLER's admin password is missing or wrong
 //   403  the request did not come from this deployment's own origin
 //   413  the request body is too large
-//   502  OUR upstream call to Anthropic failed; upstream_status says how
+//   502  OUR upstream call failed -- Anthropic, or the storage read that
+//        fetches the document; upstream_status says which and how
 
 // Vercel rejects bodies over 4.5MB before this handler runs, so this cap sits
-// under that and is the number we can actually explain to a caller. A PDF is
-// ~33% larger once base64-encoded, so this allows roughly a 3MB PDF.
+// under that and is the number we can actually explain to a caller. The PDF no
+// longer travels in the body -- the caller sends a storage_path and this
+// function fetches the bytes itself -- so what remains here is prompt text.
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_MESSAGES = 20;
+
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://dtgsegabaivtgyccrcxi.supabase.co';
+const BUCKET = 'policies';
+
+// Anthropic caps a whole request at 32MB, and base64 inflates bytes by 4/3, so
+// an inlined PDF may be about 23MB before the encoding alone breaches it. This
+// sits below that with room for the prompt. Anything larger goes via the Files
+// API, which takes raw multipart and caps at 500MB -- twenty times more than
+// storage will even accept, so size stops being a failure mode above this line.
+const INLINE_MAX_BYTES = 20 * 1024 * 1024;
+
+// A backstop, not the mechanism. The delete in the finally block is what
+// removes an uploaded file; this is what removes it anyway if that delete never
+// runs -- the function is killed, the deploy dies mid-request, the API is down.
+// One hour is the shortest the Files API accepts.
+const FILE_EXPIRY_SECONDS = 3600;
+
+// A stored object is addressed by a path this function interpolates into a URL,
+// so it has to be confined to the audit's own folder. portal.js validates the
+// same shape on the way in; this is the read side of that check and does not
+// trust it to have happened.
+function safeStoragePath(path) {
+  if (typeof path !== 'string' || !path) return null;
+  if (path.length > 400) return null;
+  // No traversal, no absolute paths, no encoded separators, and exactly the
+  // two segments the writer creates: <audit_id>/<random>_<file name>.
+  if (path.includes('..') || path.startsWith('/') || /%2e|%2f|\\/i.test(path)) return null;
+  if (!/^[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,200}$/.test(path)) return null;
+  return path;
+}
+
+async function fetchStoredPdf(storagePath, serviceKey) {
+  const url = `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${storagePath}`;
+  const r = await fetch(url, {
+    headers: { apikey: serviceKey, Authorization: 'Bearer ' + serviceKey },
+  });
+  if (!r.ok) {
+    const detail = await r.text();
+    return { ok: false, status: r.status, detail: detail.slice(0, 200) };
+  }
+  return { ok: true, buffer: Buffer.from(await r.arrayBuffer()) };
+}
+
+// Upload to the Files API and return its id. Raw multipart, so the bytes are
+// not base64-inflated and the 32MB request cap does not apply.
+async function uploadToFilesApi(buffer, fileName, apiKey) {
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: 'application/pdf' }), fileName || 'policy.pdf');
+  form.append('expires_in_seconds', String(FILE_EXPIRY_SECONDS));
+  const r = await fetch('https://api.anthropic.com/v1/files', {
+    method: 'POST',
+    // Content-Type is deliberately unset: fetch derives it from the FormData
+    // along with the multipart boundary, and setting it by hand loses that.
+    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: form,
+  });
+  const text = await r.text();
+  if (!r.ok) return { ok: false, status: r.status, detail: text.slice(0, 300) };
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { parsed = null; }
+  if (!parsed?.id) return { ok: false, status: r.status, detail: 'upload returned no file id' };
+  return { ok: true, id: parsed.id, bytes: buffer.length };
+}
+
+async function deleteFromFilesApi(fileId, apiKey) {
+  try {
+    const r = await fetch(`https://api.anthropic.com/v1/files/${encodeURIComponent(fileId)}`, {
+      method: 'DELETE',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    });
+    // Logged at both ends: an upload with no matching delete is the thing worth
+    // finding in the log, and it can only be found if both lines exist.
+    console.log(`[analyze] files-api delete ${fileId}: ${r.ok ? 'ok' : 'FAILED ' + r.status}`);
+    return r.ok;
+  } catch (e) {
+    console.error(`[analyze] files-api delete ${fileId} threw: ${e.message}. Expiry in ${FILE_EXPIRY_SECONDS}s is the backstop.`);
+    return false;
+  }
+}
 
 // This deployment's own host, which covers production, preview deployments and
 // local dev without hardcoding any of them.
@@ -109,8 +196,12 @@ export default async function handler(req, res) {
     return res.status(413).json({ error: 'Request too large', limit_bytes: MAX_BODY_BYTES });
   }
 
+  // Set only when the Files API was used, and read by the finally block. It has
+  // to be declared out here so that a throw anywhere below still finds it.
+  let uploadedFileId = null;
+
   try {
-    const { messages, system } = req.body || {};
+    const { messages, system, storage_path: storagePath, file_name: fileName } = req.body || {};
 
     if (!Array.isArray(messages) || messages.length === 0 || messages.length > MAX_MESSAGES) {
       return res.status(400).json({ error: 'Invalid messages' });
@@ -121,6 +212,51 @@ export default async function handler(req, res) {
     // Content-length can be absent or wrong; this is the size we actually send.
     if (Buffer.byteLength(JSON.stringify({ messages, system }), 'utf8') > MAX_BODY_BYTES) {
       return res.status(413).json({ error: 'Request too large', limit_bytes: MAX_BODY_BYTES });
+    }
+
+    // The document is fetched here rather than carried in the body. The caller
+    // sends a path; this function reads the bytes with the service key and
+    // decides how to hand them to Anthropic.
+    let outboundMessages = messages;
+    if (storagePath !== undefined) {
+      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!serviceKey) return res.status(500).json({ error: 'Server not configured' });
+
+      const safePath = safeStoragePath(storagePath);
+      if (!safePath) return res.status(400).json({ error: 'Invalid storage path' });
+
+      const fetched = await fetchStoredPdf(safePath, serviceKey);
+      if (!fetched.ok) {
+        console.error(`[analyze] storage fetch failed for ${safePath}: ${fetched.status} ${fetched.detail}`);
+        return res.status(502).json({ error: 'The stored document could not be retrieved', upstream_status: fetched.status });
+      }
+
+      const buf = fetched.buffer;
+      let documentBlock;
+      if (buf.length <= INLINE_MAX_BYTES) {
+        documentBlock = {
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: buf.toString('base64') },
+        };
+      } else {
+        const up = await uploadToFilesApi(buf, fileName, ANTHROPIC_API_KEY);
+        if (!up.ok) {
+          console.error(`[analyze] files-api upload failed: ${up.status} ${up.detail}`);
+          return res.status(502).json({ error: 'Upstream API request failed', upstream_status: up.status, details: up.detail });
+        }
+        uploadedFileId = up.id;
+        console.log(`[analyze] files-api upload ${up.id}: ${up.bytes} bytes from ${safePath}, expires in ${FILE_EXPIRY_SECONDS}s`);
+        documentBlock = { type: 'document', source: { type: 'file', file_id: up.id } };
+      }
+
+      // The caller sends the prompt with a placeholder where the document goes,
+      // so the document block is prepended rather than substituted -- the
+      // caller never has to know which of the two routes was taken.
+      outboundMessages = messages.map((m, i) =>
+        i === 0 && m?.role === 'user' && Array.isArray(m.content)
+          ? { ...m, content: [documentBlock, ...m.content] }
+          : m
+      );
     }
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -145,11 +281,13 @@ export default async function handler(req, res) {
         // all answer. Current models reason first by default and that reasoning
         // counts against max_tokens, so 4000 could be spent thinking and return
         // a truncated fragment -- or nothing -- with no error to show for it.
-        // 16000 leaves room for the reasoning and the JSON, and stays well
-        // inside the 120s maxDuration this function is given in vercel.json.
+        // 16000 leaves room for the reasoning and the JSON, inside the 300s
+        // maxDuration this function is given in vercel.json -- which now also
+        // has to cover fetching the document from storage and, for a large one,
+        // uploading it to the Files API before the model call even starts.
         max_tokens: 16000,
         system: system || '',
-        messages,
+        messages: outboundMessages,
       }),
     });
 
@@ -178,6 +316,14 @@ export default async function handler(req, res) {
     }
     return res.status(200).json(data);
   } catch (error) {
+    console.error(`[analyze] ${error.message}`);
     return res.status(500).json({ error: 'Server error', message: error.message });
+  } finally {
+    // In finally, not after the call: every path out of the try block above
+    // returns rather than falling through, and a 502, a throw or a timeout are
+    // exactly the cases where a client's policy document would otherwise be
+    // left sitting in Anthropic's storage. The expiry set at upload covers the
+    // one case this cannot -- the function dying before it gets here.
+    if (uploadedFileId) await deleteFromFilesApi(uploadedFileId, ANTHROPIC_API_KEY);
   }
 }

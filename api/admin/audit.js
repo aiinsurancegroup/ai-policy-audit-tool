@@ -52,6 +52,30 @@ const ALLOWED_TABLES = new Set([
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "https://dtgsegabaivtgyccrcxi.supabase.co";
 
+// Kept in step with api/client/portal.js, which writes objects into the same
+// bucket under the same convention. Both sides validate: the writer so it only
+// creates paths of this shape, the reader so it only accepts them.
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+
+function safeFileName(name) {
+  const base = String(name || "").split(/[\\/]/).pop() || "document.pdf";
+  return base.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "document.pdf";
+}
+
+function randomSegment() {
+  return Math.random().toString(36).slice(2, 11);
+}
+
+// <audit_id>/<random>_<file name>, and nothing else. Rejects traversal,
+// absolute paths, backslashes and percent-encoded separators.
+function safeStoragePath(path) {
+  if (typeof path !== "string" || !path || path.length > 400) return null;
+  if (path.includes("..") || path.startsWith("/") || /%2e|%2f|\\/i.test(path)) return null;
+  if (!/^[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,200}$/.test(path)) return null;
+  return path;
+}
+
 function buildQueryString(filter, order, limit) {
   const parts = [];
   if (filter && typeof filter === "object") {
@@ -168,8 +192,42 @@ export default async function handler(req, res) {
       return res.status(r.status).setHeader("Content-Type", "application/json").send(text || "{}");
     }
 
+    // Mint a signed upload URL so an operator's file goes browser -> storage
+    // directly, the same route the client portal uses. The bytes never pass
+    // through this function, and the server owns the path: an admin upload is
+    // now stored like a client one, which is what makes every row re-runnable.
+    if (action === "upload_url") {
+      const fileName = safeFileName(body.file_name);
+      if (!/\.pdf$/i.test(fileName)) return res.status(400).json({ error: "Only PDF files are accepted." });
+      if (!UUID_RE.test(String(body.audit_id || ""))) return res.status(400).json({ error: "Invalid audit id" });
+      const size = Number(body.file_size_bytes);
+      if (!Number.isFinite(size) || size <= 0 || size > MAX_FILE_BYTES) {
+        return res.status(400).json({ error: `File must be between 1 byte and ${Math.round(MAX_FILE_BYTES / 1048576)}MB.` });
+      }
+
+      const path = `${body.audit_id}/${randomSegment()}_${fileName}`;
+      const signRes = await fetch(`${SUPABASE_URL}/storage/v1/object/upload/sign/policies/${path}`, {
+        method: "POST",
+        headers: { apikey: serviceKey, Authorization: "Bearer " + serviceKey, "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!signRes.ok) {
+        const detail = await signRes.text();
+        return res.status(502).json({ error: "Could not prepare upload.", detail: detail.slice(0, 200) });
+      }
+      let signed = null;
+      try { signed = JSON.parse(await signRes.text()); } catch { signed = null; }
+      if (!signed?.url) return res.status(502).json({ error: "Could not prepare upload." });
+      const uploadToken = new URLSearchParams(signed.url.split("?")[1] || "").get("token");
+      return res.status(200).json({ path, upload_token: uploadToken });
+    }
+
     if (action === "download_policy") {
       if (!body.storage_path) return res.status(400).json({ error: "Missing storage_path" });
+      // This path is interpolated into a URL. Without this check a caller could
+      // walk out of the bucket with "..", and being admin-gated is not a reason
+      // to accept a path we did not issue.
+      if (!safeStoragePath(body.storage_path)) return res.status(400).json({ error: "Invalid storage path" });
       const url = `${SUPABASE_URL}/storage/v1/object/policies/${body.storage_path}`;
       const r = await fetch(url, { headers: { apikey: serviceKey, Authorization: "Bearer " + serviceKey } });
       if (!r.ok) {

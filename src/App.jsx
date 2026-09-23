@@ -259,22 +259,54 @@ const todayISO = () => {
 // that body at 4MB (Vercel rejects anything over 4.5MB before our code runs).
 // Checked here as well as on the server so the operator is told immediately,
 // by a message naming the actual file, rather than after a wasted upload.
-// Branch 3 removes this ceiling by reading the PDF from storage server-side.
-const MAX_PDF_BYTES = 2.9 * 1024 * 1024;
+// The server reads the PDF from storage now, so the old ~3MB request-body
+// ceiling is gone and this is storage's limit, matching the client portal.
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
 const mb = (bytes) => (bytes / 1048576).toFixed(1);
+
+// Anthropic refuses a PDF over 600 pages whatever route it arrives by, and no
+// amount of compression changes a page count. It cannot be checked here without
+// parsing the file, so it is named in the failure rather than predicted.
+const PAGE_LIMIT_HINT = 'If the document is longer than 600 pages, split it and upload each part as its own policy.';
+
+// Put an operator's file in storage, by the same route the client portal uses:
+// the server mints a signed URL and owns the path, the bytes go straight to
+// storage. Returns the storage path the analysis will be asked to read.
+async function uploadToStorage(password, auditId, file) {
+  const resp = await adminApi(password, {
+    action: 'upload_url', audit_id: auditId,
+    file_name: file.name, file_size_bytes: file.size,
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => null);
+    throw new Error(body?.error || 'Could not prepare the upload.');
+  }
+  const { path, upload_token } = await resp.json();
+  const { error } = await supabase.storage.from('policies').uploadToSignedUrl(path, upload_token, file);
+  if (error) throw new Error(`Upload failed for ${file.name}. Please try again.`);
+  return path;
+}
 
 // One analysis call. Extracted because there were two near-identical copies of
 // this and replace/re-run/add would have made five; a fix applied to four of
 // five copies is how the "|| 'UNKNOWN'" bug survived as long as it did.
-async function analyzePdf(password, { b64, label, clientName, clientIndustry }) {
+// The document is named, not carried: the server reads it from storage. The
+// browser used to base64 the PDF into this body, which is what capped an
+// analysis at roughly 3MB regardless of what storage would hold.
+async function analyzePdf(password, { storagePath, fileName, label, clientName, clientIndustry }) {
   try {
     const resp = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-admin-password': password },
-      body: JSON.stringify({ system: ANALYSIS_PROMPT, messages: [{ role: 'user', content: [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
-        { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + label + ' policy for ' + clientName + ' (Industry: ' + clientIndustry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
-      ] }] }),
+      body: JSON.stringify({
+        system: ANALYSIS_PROMPT,
+        storage_path: storagePath,
+        file_name: fileName,
+        // The server prepends the document block to this content array.
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: "TODAY'S DATE: " + todayISO() + '\n\nAnalyze this ' + label + ' policy for ' + clientName + ' (Industry: ' + clientIndustry + '). Find ALL AI-related exclusions, gaps, and coverage issues. Respond ONLY with JSON.' },
+        ] }],
+      }),
     });
     if (!resp.ok) throw new Error(await describeFailure(resp));
     const data = await resp.json();
@@ -629,10 +661,6 @@ const logActivity = async (password, auditId, action, details, performedBy = 'sy
   }
 };
 
-const fileToBase64 = (file) => new Promise((res, rej) => {
-  const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = () => rej(new Error('Read failed')); r.readAsDataURL(file);
-});
-
 // Only completed verdicts carry risk. A failed or pending policy said nothing,
 // and a document that is not a policy carries no coverage risk -- previously
 // every one of those fell through to MODERATE, or worse let an all-failed audit
@@ -986,6 +1014,13 @@ export default function App() {
   const runAudit = async () => {
    if (!clientName || !clientInd || !files.length) return;
     if (files.some(f => !f.pt)) { setError('Tag all files with a policy type.'); return; }
+    // The other upload paths have always checked this; this one never did, so
+    // an oversize file here failed at the far end with a generic message.
+    const tooBig = files.filter(f => f.size > MAX_PDF_BYTES);
+    if (tooBig.length) {
+      setError(`${tooBig.map(f => `${f.name} (${mb(f.size)} MB)`).join(', ')} — over the ${mb(MAX_PDF_BYTES)} MB limit. ${PAGE_LIMIT_HINT}`);
+      return;
+    }
     setError(''); setLoading(true); setScreen('analyzing');
 
     const auditResp = await adminApi(adminPw, { action: 'insert', table: 'audits', returnRow: true, payload: {
@@ -1012,8 +1047,18 @@ export default function App() {
       setProgress({ c: i + 1, t: files.length, l: lbl });
       setLoadMsg('Analyzing ' + lbl + '...');
 
-      const b64 = await fileToBase64(f.file);
-      const result = await analyzePdf(adminPw, { b64, label: lbl, clientName, clientIndustry: clientInd });
+      // Stored before analysed, and the path kept on the row, so this document
+      // can be re-run later. Admin uploads used to stream straight to the API
+      // and keep nothing, which made Re-run impossible for every row they made.
+      let storagePath = null, result;
+      try {
+        setLoadMsg('Uploading ' + lbl + '...');
+        storagePath = await uploadToStorage(adminPw, audit.id, f.file);
+        setLoadMsg('Analyzing ' + lbl + '...');
+        result = await analyzePdf(adminPw, { storagePath, fileName: f.name, label: lbl, clientName, clientIndustry: clientInd });
+      } catch (e) {
+        result = { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } };
+      }
 
       // A missing status means the run did not produce one, which is a failure.
       // It used to default to UNKNOWN -- a real verdict -- so a broken run was
@@ -1023,7 +1068,7 @@ export default function App() {
       await adminApi(adminPw, { action: 'insert', table: 'audit_policies', payload: {
         audit_id: audit.id,
         policy_type: (isAnalysed(status) && resolveDetectedType(result.policy_type)) || f.pt,
-        file_name: f.name, file_size_bytes: f.size,
+        file_name: f.name, file_size_bytes: f.size, storage_path: storagePath,
         carrier: result.carrier || null, policy_number: result.policy_number || null,
         effective_date: result.effective_date || null, expiration_date: result.expiration_date || null,
         ai_status: status, risk_level: isVerdict(status) ? (result.risk_level || null) : null,
@@ -1073,17 +1118,20 @@ export default function App() {
     return pols;
   };
 
-  const runOnePolicy = async (pol, { b64, fileName, fileSize, typeId }) => {
+  const runOnePolicy = async (pol, { storagePath, fileName, fileSize, typeId }) => {
     const label = POLICY_TYPES.find(p => p.id === (typeId || pol.policy_type))?.label || pol.policy_type;
     setRowBusy(pol.id); setRowErr('');
     try {
       const result = await analyzePdf(adminPw, {
-        b64, label,
+        storagePath, fileName: fileName || pol.file_name, label,
         clientName: curAudit.client_name, clientIndustry: curAudit.client_industry,
       });
       const payload = {
         ...analysisColumns(result, typeId || pol.policy_type),
-        ...(fileName ? { file_name: fileName, file_size_bytes: fileSize } : {}),
+        // A replacement carries a new document, so the row's pointer to the old
+        // one must move with it or a later re-run would analyse the file the
+        // operator just replaced.
+        ...(fileName ? { file_name: fileName, file_size_bytes: fileSize, storage_path: storagePath } : {}),
       };
       const upd = await adminApi(adminPw, { action: 'update', table: 'audit_policies', filter: { id: pol.id }, payload });
       if (!upd.ok) { setRowErr('Analysis finished but the result could not be saved.'); return; }
@@ -1101,28 +1149,28 @@ export default function App() {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.pdf')) { setRowErr('Only PDF files can be analysed.'); return; }
     if (file.size > MAX_PDF_BYTES) {
-      setRowErr(`${file.name} is ${mb(file.size)} MB. The limit is ${mb(MAX_PDF_BYTES)} MB, because the file is encoded into the request and the platform caps that at 4.5 MB. Compress it, or split it.`);
+      setRowErr(`${file.name} is ${mb(file.size)} MB, over the ${mb(MAX_PDF_BYTES)} MB storage limit. ${PAGE_LIMIT_HINT}`);
       return;
     }
-    const b64 = await fileToBase64(file);
-    await runOnePolicy(pol, { b64, fileName: file.name, fileSize: file.size, typeId: pol.policy_type });
-  };
-
-  // Re-run the document already held for this row. Only possible when the file
-  // was stored -- admin uploads stream straight to the API and keep nothing, so
-  // for those rows the document no longer exists and Replace is the only route.
-  const rerunPolicy = async (pol) => {
-    if (!pol.storage_path) { setRowErr('This document was not stored, so it cannot be re-run. Use Replace file.'); return; }
     setRowBusy(pol.id); setRowErr('');
+    let path;
     try {
-      const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
-      const dlJson = dl.ok ? await dl.json().catch(() => null) : null;
-      if (!dlJson?.base64) { setRowErr('Could not retrieve the stored document.'); return; }
-      setRowBusy(null);
-      await runOnePolicy(pol, { b64: dlJson.base64 });
+      path = await uploadToStorage(adminPw, curAudit.id, file);
+    } catch (e) {
+      setRowErr(e.message); setRowBusy(null); return;
     } finally {
       setRowBusy(null);
     }
+    await runOnePolicy(pol, { storagePath: path, fileName: file.name, fileSize: file.size, typeId: pol.policy_type });
+  };
+
+  // Re-run the document already held for this row. Every row has one now: an
+  // admin upload is stored before it is analysed, exactly like a client one.
+  // Rows created before that change still have no storage_path, and for those
+  // the document was never kept, so Replace remains the only route.
+  const rerunPolicy = async (pol) => {
+    if (!pol.storage_path) { setRowErr('This document was uploaded before documents were stored, so it cannot be re-run. Use Replace file.'); return; }
+    await runOnePolicy(pol, { storagePath: pol.storage_path });
   };
 
   // A late document joins the audit as a new row.
@@ -1130,16 +1178,21 @@ export default function App() {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.pdf')) { setRowErr('Only PDF files can be analysed.'); return; }
     if (file.size > MAX_PDF_BYTES) {
-      setRowErr(`${file.name} is ${mb(file.size)} MB. The limit is ${mb(MAX_PDF_BYTES)} MB. Compress it, or split it.`);
+      setRowErr(`${file.name} is ${mb(file.size)} MB, over the ${mb(MAX_PDF_BYTES)} MB storage limit. ${PAGE_LIMIT_HINT}`);
       return;
     }
     setRowBusy('new'); setRowErr('');
     try {
-      const b64 = await fileToBase64(file);
       const label = POLICY_TYPES.find(p => p.id === typeId)?.label || typeId;
-      const result = await analyzePdf(adminPw, { b64, label, clientName: curAudit.client_name, clientIndustry: curAudit.client_industry });
+      let storagePath = null, result;
+      try {
+        storagePath = await uploadToStorage(adminPw, curAudit.id, file);
+        result = await analyzePdf(adminPw, { storagePath, fileName: file.name, label, clientName: curAudit.client_name, clientIndustry: curAudit.client_industry });
+      } catch (e) {
+        result = { ai_status: 'FAILED', failure: { message: e.message, at: new Date().toISOString() } };
+      }
       const ins = await adminApi(adminPw, { action: 'insert', table: 'audit_policies', payload: {
-        audit_id: curAudit.id, file_name: file.name, file_size_bytes: file.size,
+        audit_id: curAudit.id, file_name: file.name, file_size_bytes: file.size, storage_path: storagePath,
         ...analysisColumns(result, typeId),
       }});
       if (!ins.ok) { setRowErr('Analysis finished but the new policy could not be saved.'); return; }
@@ -1297,14 +1350,12 @@ export default function App() {
       setProgress({ c: i + 1, t: pols.length, l: lbl });
       setLoadMsg('Analyzing ' + lbl + '...');
 
-      let result;
-      const dl = await adminApi(adminPw, { action: 'download_policy', storage_path: pol.storage_path });
-      const dlJson = dl.ok ? await dl.json().catch(() => null) : null;
-      if (!dlJson?.base64) {
-        result = { ai_status: 'FAILED', failure: { message: 'The stored document could not be retrieved', at: new Date().toISOString() } };
-      } else {
-        result = await analyzePdf(adminPw, { b64: dlJson.base64, label: lbl, clientName: audit.client_name, clientIndustry: audit.client_industry });
-      }
+      // The document stays on the server. It used to be downloaded here, sent
+      // to the browser as base64 and posted straight back, which is the round
+      // trip that made a 25MB client upload unanalysable.
+      const result = pol.storage_path
+        ? await analyzePdf(adminPw, { storagePath: pol.storage_path, fileName: pol.file_name, label: lbl, clientName: audit.client_name, clientIndustry: audit.client_industry })
+        : { ai_status: 'FAILED', failure: { message: 'No stored document for this row', at: new Date().toISOString() } };
 
       const status = result.ai_status || 'FAILED';
       statuses.push(status);
