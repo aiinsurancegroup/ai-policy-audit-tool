@@ -36,31 +36,6 @@ Check it before relying on re-issue.
 
 ---
 
-## Placing-agency disclosure
-**Added 2026-09-23 · Blocked on the operator's decision**
-
-Commit `1a22a2f` removed the line *"The AI Insurance Group provides coverage gap
-identification services through Alexander Capital Insurance."* on the
-understanding it was a stale reference. It was not: business is currently placed
-through Alexander Capital on the operator's personal producer licence, and The
-AI Insurance Group's own appointments are expected around early October 2026.
-
-Nothing is to be re-added by guesswork. The wording of a placing-agency
-disclosure is regulated and is the operator's to write.
-
-A full inventory of every client-facing place that names the agency, claims a
-licence, or implies we place or bind coverage is being produced separately. When
-the operator has decided the wording for each, it gets applied in one pass —
-client document, report footer, consent text, email templates, and the website
-plan's trust and licensing sections.
-
-**Do not** apply a single global find-and-replace. The right wording differs by
-context: a review is arguably provided by The AI Insurance Group, whereas a
-placement today is made through Alexander Capital, and the consent text is a
-third thing again.
-
----
-
 ## Supabase project-wide upload limit
 **Added 2026-09-23 · Operator to check**
 
