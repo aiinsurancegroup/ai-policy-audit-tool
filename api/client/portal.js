@@ -79,7 +79,7 @@ const POLICY_TYPE_IDS = new Set([
 // client sends, so the signed statement cannot be forged. `lookup` returns this
 // same constant for display, which keeps the text the client SEES and the text
 // we STORE provably identical.
-const CONSENT_TEXT = 'I authorize The AI Insurance Group to review and analyze the commercial insurance policy documents provided herein for the purpose of identifying AI-related coverage gaps, exclusions, and endorsements. I understand that this analysis is for informational purposes only and does not constitute a coverage determination, legal advice, or binding coverage opinion. Final coverage interpretations should be confirmed with the issuing carrier(s). I confirm that I am authorized to share these policy documents for review purposes.';
+const CONSENT_TEXT = 'I authorize The AI Insurance Group to review and analyze the insurance policy documents I provide, for the purpose of identifying coverage gaps, exclusions, endorsements and other features of my insurance program. I understand that this review is for informational purposes only and does not constitute a coverage determination, legal advice, or a binding coverage opinion. Final coverage interpretations should be confirmed with the issuing carrier. I agree that The AI Insurance Group may contact me to discuss the findings of this review. I understand that my documents are stored securely, are never sold, and are shared only with the service providers used to carry out this review. I confirm that I am authorized to share these documents for review purposes.';
 
 // Best-effort brute-force damper, per warm serverless instance. Vercel runs many
 // instances, so this is a speed bump, NOT a rate limit — real protection needs

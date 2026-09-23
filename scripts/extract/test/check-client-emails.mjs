@@ -77,5 +77,40 @@ for (const word of ['risk', 'gap', 'quote', 'save', 'premium']) {
   expect(`  no "${word}"`, reissue.includes(word), false);
 }
 
+
+// --- consent text -----------------------------------------------------------
+// Two copies exist: api/client/portal.js is authoritative and stores the signed
+// statement, src/App.jsx holds the same string for the admin manual-entry path.
+// If they drift, a client signs one thing and we record another.
+const appSrc = fs.readFileSync('src/App.jsx', 'utf8');
+const grabConsent = (s) => (s.match(/const CONSENT_TEXT = '([^']*)';/) || [])[1] || null;
+const consentPortal = grabConsent(portal);
+const consentApp = grabConsent(appSrc);
+
+console.log('\n--- the consent text is one string in two files');
+expect('present in the portal', typeof consentPortal, 'string');
+expect('present in the admin path', typeof consentApp, 'string');
+expect('IDENTICAL', consentPortal === consentApp, true);
+
+console.log('\n--- it authorises what the tool actually does');
+expect('a program review, not AI-only', consentPortal.includes('other features of my insurance program'), true);
+expect('  the AI-only scope is gone', /AI-related coverage gaps/.test(consentPortal), false);
+expect('  not limited to commercial', /commercial insurance policy documents/.test(consentPortal), false);
+expect('permits contact about findings', consentPortal.includes('may contact me to discuss the findings'), true);
+expect('states documents are stored securely', consentPortal.includes('stored securely'), true);
+expect('  and never sold', consentPortal.includes('are never sold'), true);
+// The documents are sent to a third-party API to be analysed. A flat "never
+// shared" would be false in a signed statement, so the carve-out is required
+// rather than hedging.
+expect('  sharing is scoped, not denied outright', consentPortal.includes('shared only with the service providers used to carry out this review'), true);
+expect('still disclaims a coverage determination', consentPortal.includes('does not constitute a coverage determination'), true);
+expect('still points to the carrier', consentPortal.includes('confirmed with the issuing carrier'), true);
+// Authorisation verbs only. A bare /bind/ matched "binding coverage opinion",
+// which is the disclaimer saying this is NOT one -- the opposite of the thing
+// being guarded against.
+expect('authorises review only, not placement',
+  /\bto (quote|place|bind|purchase|procure|write)\b/i.test(consentPortal), false);
+expect('  and the binding disclaimer survives', consentPortal.includes('binding coverage opinion'), true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
