@@ -39,6 +39,17 @@ const BUCKET = "policies";
 const TOKEN_RE = /^[a-z0-9]{16,64}$/;
 
 const MAX_FILES = 20;
+// 25MB. This was the ceiling back when a document had to be base64-encoded into
+// an analysis request, and it was generous then only because nothing near it
+// could actually be analysed -- anything over ~3MB failed later, after the
+// client had been told the upload succeeded. The server now reads documents
+// from storage and sends anything large via the Files API, whose limit is
+// 500MB, so this number is no longer a promise the pipeline cannot keep.
+//
+// It stays at 25MB because the bucket has no file_size_limit of its own and so
+// inherits the project-wide upload limit, which is a Supabase dashboard setting
+// and not ours to raise from here. Raising it means raising that first, then
+// this and MAX_FILE_BYTES in api/admin/audit.js together.
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25MB
 const MAX_SIGNER_NAME = 200;
 const MAX_SIGNER_TITLE = 100;
