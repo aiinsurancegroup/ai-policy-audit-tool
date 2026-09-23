@@ -450,7 +450,7 @@ RESPOND ONLY with this JSON:
 
   "program_synthesis": [{"finding": "a program-level point drawn from the per-policy analyses together", "evidence": "which policies and what in them", "severity": "HIGH|MODERATE|LOW"}],
 
-  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague: for not_supplied write what we need from them ('We don't have this on file -- send us the current declarations'), never 'confirm with the client'. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
+  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague -- never 'confirm with the client'. Write the note the STATE calls for, and do not let one state's phrasing bleed into another: for absent, say what the documents show is not carried ('The only excess you hold responds to auto claims; nothing sits above your general liability limits'); for not_supplied, say what we need from them ('We don't have this on file -- send us the current declarations'); for present, one clause on what it is and any term or carve-out worth knowing. A note ending in 'send us...' on a line you marked absent means you picked the wrong state. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
 
   "client_recommendations": ["4-8 recommendations in plain language, written to be read BY THE CLIENT. No jargon, no internal sales angles, no figures the documents do not show, and never a premium saving or estimate. Each should say what to do and why it matters in one or two sentences. Refer to a policy by its carrier and line -- 'the General Star excess auto policy' -- NEVER by an upload file name, which the client has never seen. These appear in the client-facing document, so write them as advice to the client, not as notes to the agent. Written in OUR voice as their broker -- 'We recommend raising...', 'We'll confirm the underlying limits with General Star...' -- never 'ask your broker' or 'your agent', because we ARE their broker and there is nobody else to ask."],
 
@@ -459,7 +459,13 @@ RESPOND ONLY with this JSON:
 
 program_synthesis: 5-8 points. Program-level only -- if a point is true of one policy in isolation it belongs in that policy's own analysis, not here. Include where one policy reports a coverage missing that ANOTHER policy in this audit actually provides; that contradiction is invisible from either document alone and is exactly what this pass is for.
 
-coverage_position: cover every line of business you can see evidence about, plus any a supplied policy refers to. Use "absent" only where a supplied document affirmatively shows the coverage is not carried -- not merely because no document mentioned it. When in doubt it is "not_supplied", which costs the agent a question; "absent" wrongly costs them the client's trust in the whole report.
+coverage_position: cover every line of business you can see evidence about, plus any a supplied policy refers to.
+
+The absent/not_supplied split is the whole point of this pass, and BOTH directions of error are real:
+- "absent" means the supplied documents affirmatively show the coverage is not carried: a coverage part marked not purchased or not offered, an exclusion that removes the line outright, or a tower whose only excess layer responds to a different line than the one asked about. This is a genuine gap and the client is reading this report to find it. Marking such a line "not_supplied" buries the finding they came for and makes us look like we did not read the documents we were sent.
+- "not_supplied" means no document we were given speaks to the line at all, so we cannot know. Marking such a line "absent" claims knowledge we do not have and costs the client's trust in the whole report.
+
+The test is what the documents show, NOT how cautious you feel. Do not default a whole list to one state: a program of five policies will normally produce several of each. Only where the evidence genuinely does not settle it does doubt resolve to "not_supplied".
 
 agent_notes are INTERNAL and are stripped from anything the client sees.`;
 
