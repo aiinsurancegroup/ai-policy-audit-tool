@@ -218,6 +218,31 @@ function buildPolicyTable(policies, today) {
 // were actually given the kind of policy that would carry it. A general
 // liability policy declining its cyber coverage part says the line is not on
 // THAT policy; it is silent on whether the client buys cyber from someone else.
+// Lines that exist ONLY as an election or endorsement on a host policy, never
+// as a standalone policy bought from another carrier. The host-type table below
+// asks "could another policy carry this line", which is the wrong question for
+// these: nobody sells terrorism cover separately, the insurer writing the
+// policy must offer it and the insured takes it or does not, right there.
+//
+// So if the host policy is in the audit, we can see the answer, and the line is
+// eligible to be absent. A null host list means any policy can host it --
+// terrorism is elected on liability, property and package policies alike.
+const ELECTION_LINES = [
+  [/terror|\btria\b|tripra/i, null],
+];
+
+// null       not an election line; the host-type table decides
+// "has_host"  an election whose host policy is in the audit, so we can see it
+// "no_host"   a known election whose host is NOT here, so we cannot know
+function electionStatus(line, suppliedTypes, policyCount) {
+  if (typeof line !== "string") return null;
+  const entry = ELECTION_LINES.find(([re]) => re.test(line));
+  if (!entry) return null;
+  const hosts = entry[1];
+  const present = hosts === null ? policyCount > 0 : hosts.some((t) => suppliedTypes.has(t));
+  return present ? "has_host" : "no_host";
+}
+
 const LINE_HOST_TYPES = [
   [/\bcyber|data breach|privacy\b/i, ["cyber"]],
   [/employment practices|\bepli\b/i, ["epli"]],
@@ -270,11 +295,45 @@ function resolveDeclinedElections(position) {
 // This exists because the prompt alone has been wrong here twice. Telling a
 // client they have no cyber cover, on the strength of a liability policy that
 // was never going to carry cyber, is the most damaging thing this field can do.
+// A downgraded line keeps what the document showed and gains the question. The
+// client has to be able to see both: what we read, and what we still need.
+function declineNote(note) {
+  const kept = typeof note === "string" && note.trim() ? note.trim().replace(/[.\s]+$/, "") : "";
+  return kept
+    ? `${kept} — tell us whether you hold a standalone policy for this, or we can quote it.`
+    : "We were not given a policy that would carry this line — tell us whether you hold one.";
+}
+
 function constrainAbsent(position, policyTable) {
   const suppliedTypes = new Set(policyTable.map((r) => r.policy_type).filter(Boolean));
-  const downgraded = [];
+  const downgraded = [], upgraded = [];
   const constrained = position.map((p) => {
+    const election = electionStatus(p?.line, suppliedTypes, policyTable.length);
+
+    // "not_supplied" means we cannot know. For an election declined on a host
+    // policy we are holding, we do know: the document says so. This is the one
+    // place anything here claims MORE than the model did, and it is confined to
+    // a line that can only exist on that policy, a host actually in the audit,
+    // and a note that states the decline outright.
+    if (p?.state === "not_supplied" && election === "has_host" && DECLINED.test(p.note || "")) {
+      upgraded.push(p.line);
+      return { ...p, state: "absent" };
+    }
+
     if (p?.state !== "absent" || typeof p.line !== "string") return p;
+
+    // The host policy is in the audit, so the election is visible to us and the
+    // line is eligible to be absent. Without this the host-type table below
+    // finds no policy type that "carries terrorism" -- because none does -- and
+    // knocks a correct absent down to not_supplied.
+    if (election === "has_host") return p;
+    // A known election whose host policy is NOT in the audit: we never saw the
+    // document the election lives on, so nothing about it is established.
+    if (election === "no_host") {
+      downgraded.push(p.line);
+      return { ...p, state: "not_supplied", note: declineNote(p.note) };
+    }
+
     const entry = LINE_HOST_TYPES.find(([re]) => re.test(p.line));
     // A line this table does not recognise is left alone: the prompt governs
     // it, and guessing at an unmapped line would be its own kind of error.
@@ -282,16 +341,9 @@ function constrainAbsent(position, policyTable) {
     const hostTypes = entry[1];
     if (hostTypes.some((t) => suppliedTypes.has(t))) return p;
     downgraded.push(p.line);
-    const note = typeof p.note === "string" && p.note.trim() ? p.note.trim().replace(/[.\s]+$/, "") : "";
-    return {
-      ...p,
-      state: "not_supplied",
-      note: note
-        ? `${note} — tell us whether you hold a standalone policy for this, or we can quote it.`
-        : "We were not given a policy that would carry this line — tell us whether you hold one.",
-    };
+    return { ...p, state: "not_supplied", note: declineNote(p.note) };
   });
-  return { position: constrained, downgraded };
+  return { position: constrained, downgraded, upgraded };
 }
 
 function limitAdequacy(policyTable, crossChecks) {
@@ -558,7 +610,9 @@ The absent/not_supplied split is the whole point of this pass, and BOTH directio
 
 - "not_supplied" means the documents we hold do not settle it. This INCLUDES the most common case by far: a coverage part shown as not purchased or not offered on a policy we were given. That tells us the line is not on THAT policy. It tells us nothing about whether the client buys it standalone from another carrier -- cyber, EPLI, pollution and professional liability are overwhelmingly written standalone, so a liability policy declining those parts is not evidence the client has no such cover. Say what the document shows and ask the question: "Your liability policy does not include this coverage part -- tell us whether you hold a standalone policy, or we can quote it."
 
-A COVERAGE PART NOT PURCHASED ON A SUPPLIED POLICY IS "not_supplied", NOT "absent". Marking it absent tells a client to their face that they have no cyber cover when the policy naming that gap was never the policy that would carry it. That is the single most damaging error this field can make, and it is the one to watch for.
+A COVERAGE PART NOT PURCHASED ON A SUPPLIED POLICY IS "not_supplied", NOT "absent" -- UNLESS it is an election that can only live on a policy we hold, in which case the declined-election rule above governs and the answer is "absent". Terrorism under TRIA is that exception: "terrorism was not purchased on the liability policy" and "terrorism was offered and declined" are THE SAME FACT worded two ways, and both mean absent. Do not let the wording you happen to choose decide the state.
+
+For every other line, marking a declined coverage part absent tells a client to their face that they have no cyber cover when the policy naming that gap was never the policy that would carry it. That is the single most damaging error this field can make, and it is the one to watch for.
 
 Weigh how much of the program you were actually given. A single-policy audit can almost never support "absent" for a standalone line: one document cannot rule out a policy it would never have mentioned. A full program submission supports it far more often, because the absence of a layer across every policy in a complete set is itself evidence.
 
@@ -693,6 +747,9 @@ export default async function handler(req, res) {
       console.log(`[program-report] present -> absent, note showed a declined election, for ${declined.flipped.length} line(s): ${declined.flipped.join("; ")}`);
     }
     const constrained = constrainAbsent(declined.position, policyTable);
+    if (constrained.upgraded.length) {
+      console.log(`[program-report] not_supplied -> absent, declined election on a host policy in this audit, for ${constrained.upgraded.length} line(s): ${constrained.upgraded.join("; ")}`);
+    }
     if (constrained.downgraded.length) {
       console.log(`[program-report] downgraded absent -> not_supplied for ${constrained.downgraded.length} line(s): ${constrained.downgraded.join("; ")}`);
     }

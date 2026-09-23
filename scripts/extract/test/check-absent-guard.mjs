@@ -18,13 +18,26 @@ const grab = (name) => {
   }
   return out;
 };
-// Slice each const block up to the next thing, so nothing is emitted twice.
-const table = src.slice(src.indexOf('const LINE_HOST_TYPES'), src.indexOf('// A note describing the client NOT having'));
-const declineConsts = src.slice(src.indexOf('const DECLINED ='), src.indexOf('function resolveDeclinedElections'));
-const { constrainAbsent, resolveDeclinedElections } = await import('data:text/javascript,' + encodeURIComponent(
-  table + declineConsts + grab('constrainAbsent') + grab('resolveDeclinedElections') +
-  '\nexport { constrainAbsent, resolveDeclinedElections };'
+// Pull each declaration by name rather than slicing between landmarks: the
+// landmarks moved twice while this file was being written, and a slice that
+// silently overlaps emits a const twice and fails at import.
+const decl = (name) => {
+  const i = src.indexOf(`const ${name} = `);
+  let depth = 0, started = false, out = '';
+  for (let j = i; j < src.length; j++) {
+    out += src[j];
+    if ('[{('.includes(src[j])) { depth++; started = true; }
+    else if (']})'.includes(src[j])) { depth--; }
+    else if (src[j] === ';' && (!started || depth === 0)) break;
+  }
+  return out + '\n';
+};
+const mod = await import('data:text/javascript,' + encodeURIComponent(
+  decl('ELECTION_LINES') + decl('LINE_HOST_TYPES') + decl('DECLINED') + decl('IN_FORCE') +
+  grab('electionStatus') + grab('declineNote') + grab('constrainAbsent') + grab('resolveDeclinedElections') +
+  '\nexport { constrainAbsent, resolveDeclinedElections, electionStatus };'
 ));
+const { constrainAbsent, resolveDeclinedElections } = mod;
 
 let pass = 0, fail = 0;
 const expect = (label, actual, want) => {
@@ -113,6 +126,38 @@ expect('  and is reported', triaResolved.flipped[0], 'Terrorism (TRIA) on Genera
 // Composition: flipped to absent, then judged by the host-type rule. The GL
 // policy was supplied and the election lives on it, so absent survives.
 expect('  and survives the absent constraint', constrainAbsent(triaResolved.position, glOnly).position[0].state, 'absent');
+
+console.log('\n--- an election line survives the host-type table');
+// The table asks "could another policy carry this line". For terrorism the
+// answer is no -- nobody sells it separately -- which knocked a correct absent
+// down to not_supplied. An election whose host policy is in the audit is
+// visible to us and stays absent.
+for (const line of ['Terrorism (TRIA)', 'Terrorism (Liability)', 'Terrorism / TRIPRA', 'Certified Terrorism']) {
+  expect(`  ${line}`, constrainAbsent([abs(line, 'Declined on the liability policy.')], glOnly).position[0].state, 'absent');
+}
+// With no policies at all there is no host to have seen, so nothing is known.
+expect('  but not with an empty audit', constrainAbsent([abs('Terrorism (TRIA)', 'Declined.')], []).position[0].state, 'not_supplied');
+
+console.log('\n--- a declined election is known, not unknown');
+// The exact line the live run produced, which the model itself marked
+// not_supplied after rewording "offered and declined" to "not purchased".
+const live = {
+  line: 'Terrorism (TRIA)', state: 'not_supplied',
+  note: 'Terrorism coverage was not purchased on your liability policy this term; we will re-offer the election at renewal and document your decision.',
+};
+const lifted = constrainAbsent([live], glOnly);
+expect('lifts to absent', lifted.position[0].state, 'absent');
+expect('  and is reported', lifted.upgraded[0], 'Terrorism (TRIA)');
+expect('  the note is left exactly as written', lifted.position[0].note, live.note);
+// The guardrails on the only upgrade in this file.
+expect('no upgrade without a host policy', constrainAbsent([{ ...live }], []).position[0].state, 'not_supplied');
+expect('no upgrade without decline language', constrainAbsent(
+  [{ line: 'Terrorism (TRIA)', state: 'not_supplied', note: 'We have nothing on file for this.' }], glOnly
+).position[0].state, 'not_supplied');
+expect('no upgrade for a standalone line', constrainAbsent(
+  [{ line: 'Cyber Liability', state: 'not_supplied', note: 'The cyber coverage part was declined.' }], glOnly
+).position[0].state, 'not_supplied');
+expect('the server logs upgrades too', src.includes('not_supplied -> absent, declined election'), true);
 
 console.log('\n--- the two guards compose');
 // A standalone line whose note says declined should end on not_supplied, not
