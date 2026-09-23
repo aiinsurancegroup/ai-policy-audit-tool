@@ -30,13 +30,24 @@
 // deliberately uniform: an invalid token and a valid token on an already-
 // submitted audit are not distinguishable from the outside.
 
+import crypto from "node:crypto";
+
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "https://dtgsegabaivtgyccrcxi.supabase.co";
 const BUCKET = "policies";
 
-// Live tokens are 27 chars of [a-z0-9] (three 9-char Math.random segments).
-// The range is loose so that strengthening the generator later does not require
-// changing this endpoint; it exists to reject junk before it reaches the DB.
+// Two generations of token are live at once. New ones are 64 hex characters
+// from crypto.randomBytes(32); the 15 issued before migration 08 are 27 chars
+// of [a-z0-9] from Math.random, kept working because invalidating them would
+// mean a client clicking a dead link with no explanation. They now carry a
+// 90-day expiry and age out on their own. The loose range accepts both, and
+// exists to reject junk before it reaches the database.
 const TOKEN_RE = /^[a-z0-9]{16,64}$/;
+
+// Where a re-issued link points. Matches api/send-email.js rather than being
+// derived from the request, so a forged Host header cannot redirect a client's
+// upload link to somewhere else.
+const PORTAL_ORIGIN = "https://audit.theaiinsurancegroup.com";
+const TOKEN_TTL_DAYS = 90;
 
 const MAX_FILES = 20;
 // 25MB. This was the ceiling back when a document had to be base64-encoded into
@@ -72,8 +83,10 @@ const CONSENT_TEXT = 'I authorize The AI Insurance Group to review and analyze t
 
 // Best-effort brute-force damper, per warm serverless instance. Vercel runs many
 // instances, so this is a speed bump, NOT a rate limit — real protection needs
-// the Vercel WAF or a shared KV store. It is here because the current token
-// generator is Math.random()-based and therefore guessable in principle.
+// the Vercel WAF or a shared KV store. It mattered most while tokens came from
+// Math.random and were guessable in principle; new tokens are 32 crypto bytes,
+// so it now guards the legacy tokens still in circulation and the re-issue
+// endpoint below, which sends email and would otherwise be a spam relay.
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 30;
 const rateBuckets = new Map();
@@ -222,12 +235,94 @@ async function sbRequest(url, init, serviceKey, retries = 0) {
 // The caller must keep "not_found" indistinguishable from a malformed token,
 // but "unavailable" is a different thing entirely and must not be reported as
 // a bad link.
+// Mint a fresh token for an open audit belonging to this address and email it.
+// Returns nothing the caller can observe -- see the uniform response at the
+// call site. Only ever touches an audit that has not been submitted: once a
+// client has sent their documents, the portal is closed and a new link would
+// reopen a signed consent record.
+async function reissueLink(email, serviceKey) {
+  const url =
+    `${SUPABASE_URL}/rest/v1/audits` +
+    `?client_email=eq.${encodeURIComponent(email)}` +
+    `&deleted_at=is.null` +
+    `&client_submitted_at=is.null` +
+    `&client_token=not.is.null` +
+    `&select=id,client_name,client_email` +
+    `&order=created_at.desc&limit=1`;
+
+  const found = await sbRequest(url, { method: "GET" }, serviceKey, 2);
+  if (!found.ok) return;
+  let rows = null;
+  try { rows = JSON.parse(found.text); } catch { return; }
+  const audit = Array.isArray(rows) ? rows[0] : null;
+  if (!audit?.id) return;
+
+  const token = crypto.randomBytes(32).toString("hex");
+  const now = new Date();
+  const expires = new Date(now.getTime() + TOKEN_TTL_DAYS * 86400000);
+
+  // Replacing the token invalidates the old link, which is the point: if the
+  // first one leaked, re-issuing closes it.
+  const upd = await sbRequest(
+    `${SUPABASE_URL}/rest/v1/audits?id=eq.${audit.id}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        client_token: token,
+        client_token_issued_at: now.toISOString(),
+        client_token_expires_at: expires.toISOString(),
+      }),
+    },
+    serviceKey,
+    2
+  );
+  if (!upd.ok) return;
+
+  await logActivity(serviceKey, audit.id, "CLIENT_LINK_REISSUED", { to: audit.client_email }, "client");
+  await sendLinkEmail(audit, token);
+}
+
+// Minimal Resend send. Deliberately not a call to api/send-email.js: that
+// endpoint creates an audit and mints its own token, which is the opposite of
+// what is wanted here, and it allows any origin.
+async function sendLinkEmail(audit, token) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    console.error("[portal] reissue: RESEND_API_KEY not set, link not sent");
+    return;
+  }
+  const link = `${PORTAL_ORIGIN}?token=${token}`;
+  const name = audit.client_name || "there";
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      from: "The AI Insurance Group <sal@theaiinsurancegroup.com>",
+      to: [audit.client_email],
+      reply_to: "sal@theaiinsurancegroup.com",
+      subject: "Your new secure upload link",
+      html:
+        `<p>Hi ${escapeHtml(name)},</p>` +
+        `<p>Here is a new link to send us your policy documents. It replaces the previous one, which has expired.</p>` +
+        `<p><a href="${link}">Open your secure upload page</a></p>` +
+        `<p>This link is active for ${TOKEN_TTL_DAYS} days and is specific to you &mdash; please don't forward it.</p>` +
+        `<p>&mdash; The AI Insurance Group<br>NJ Insurance Producer License No. 3004245927</p>`,
+    }),
+  });
+  if (!r.ok) console.error(`[portal] reissue email failed: ${r.status}`);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
 async function resolveAudit(token, serviceKey) {
   const url =
     `${SUPABASE_URL}/rest/v1/audits` +
     `?client_token=eq.${encodeURIComponent(token)}` +
     `&deleted_at=is.null` +
-    `&select=id,client_name,client_submitted_at,client_email` +
+    `&select=id,client_name,client_submitted_at,client_email,client_token_expires_at` +
     `&limit=1`;
 
   const res = await sbRequest(url, { method: "GET" }, serviceKey, 2);
@@ -265,6 +360,24 @@ async function logActivity(serviceKey, auditId, action, details, performedBy) {
 }
 
 const INVALID = { status: 404, body: { error: "Invalid or expired link" } };
+
+// The one place the uniform-failure rule is deliberately relaxed. Everywhere
+// else an invalid token and a valid-but-unusable one look identical, so this
+// endpoint cannot be used to test whether a token exists. An EXPIRED token is
+// different: it was ours, it was valid, and the person holding it is almost
+// certainly the client we sent it to. Telling them "this link has expired,
+// here is how to get another" costs nothing an attacker can use -- they already
+// hold the token -- and saying "invalid link" instead sends a real client away
+// with no idea what to do. The distinguishing signal is the expiry date, which
+// an attacker who holds the token could observe from its behaviour anyway.
+const EXPIRED = {
+  status: 410,
+  body: {
+    error: "This link has expired",
+    expired: true,
+    message: "Links stay active for 90 days. Request a new one and we'll email it to you.",
+  },
+};
 const UNAVAILABLE = {
   status: 503,
   body: { error: "Service temporarily unavailable. Please try again in a moment." },
@@ -291,6 +404,35 @@ export default async function handler(req, res) {
   const action = body.action;
   const token = typeof body.token === "string" ? body.token.trim() : "";
 
+  // ---- request_new_link ---------------------------------------------------
+  // Handled before the token check, because the caller reaching this has an
+  // expired token or none at all. Keyed on email rather than token.
+  //
+  // THE RESPONSE IS IDENTICAL EVERY TIME. Not for tidiness: an endpoint that
+  // answers "yes we have a review for that address" differently from "no we
+  // don't" is an oracle for testing whether a given person is a client of this
+  // agency, and it answers to anyone, at any volume. So the reply below is
+  // returned whether the address matched nothing, matched an open audit, or
+  // matched one already submitted -- and nothing about the timing, status code
+  // or body distinguishes them.
+  if (action === "request_new_link") {
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    // Shape-check only. An invalid address gets the same answer as a valid one.
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) && email.length <= 254) {
+      // Failures are swallowed on purpose: a database fault must not turn into
+      // a different response and give the oracle away.
+      try {
+        await reissueLink(email, serviceKey);
+      } catch (e) {
+        console.error(`[portal] request_new_link failed: ${e.message}`);
+      }
+    }
+    return res.status(200).json({
+      ok: true,
+      message: "If we have a review open for that address, we've emailed a new link to it.",
+    });
+  }
+
   // Cheap shape check before any database work.
   if (!TOKEN_RE.test(token)) {
     return res.status(INVALID.status).json(INVALID.body);
@@ -312,6 +454,16 @@ export default async function handler(req, res) {
       return res.status(INVALID.status).json(INVALID.body);
     }
     const audit = resolved.audit;
+
+    // Checked before any action, so an expired link cannot upload or submit --
+    // not only that it cannot be viewed. A null expiry means the token predates
+    // migration 08 and was never backfilled, which should not happen; treated
+    // as expired rather than as unlimited, because the failure that leaves a
+    // token live forever is the one worth failing safe on.
+    const expiresAt = audit.client_token_expires_at ? Date.parse(audit.client_token_expires_at) : 0;
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      return res.status(EXPIRED.status).json(EXPIRED.body);
+    }
 
     // ---- lookup -----------------------------------------------------------
     // Returns only what the portal renders, plus the consent text it must
