@@ -499,7 +499,12 @@ function ClientDocument({ audit, report, onBack }) {
               column of figures right-aligned so the decimal points line up. */}
           <Section title="Coverage Summary" breakBefore>
             <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-              <colgroup><col style={{ width: '18%' }} /><col style={{ width: '14%' }} /><col style={{ width: '22%' }} /><col style={{ width: '22%' }} /><col style={{ width: '12%' }} /><col style={{ width: '12%' }} /></colgroup>
+              {/* Policy number and Expires are both nowrap, so each needs the
+                  room to hold its longest real value: the table is fixed
+                  layout, where a column too narrow overflows rather than
+                  wraps. Limits gives up the width -- it is the one column
+                  that reads fine over two lines. */}
+              <colgroup><col style={{ width: '17%' }} /><col style={{ width: '13%' }} /><col style={{ width: '21%' }} /><col style={{ width: '20%' }} /><col style={{ width: '15%' }} /><col style={{ width: '14%' }} /></colgroup>
               <thead><tr>
                 {['Coverage', 'Carrier', 'Policy Number', 'Limits', 'Expires', 'Premium'].map(h =>
                   <th key={h} style={{ ...th, textAlign: h === 'Premium' ? 'right' : 'left' }}>{h}</th>)}
@@ -518,7 +523,7 @@ function ClientDocument({ audit, report, onBack }) {
                     {/* An expired term is the one thing in this table a client
                         must not skim past, and an in-force one is the
                         reassurance the rest of the row is worth reading. */}
-                    <td style={{ ...cell, color: r.term_status?.state === 'expired' ? TERM_EXPIRED : TERM_INFORCE, fontWeight: 600 }}>
+                    <td style={{ ...cell, whiteSpace: 'nowrap', color: r.term_status?.state === 'expired' ? TERM_EXPIRED : TERM_INFORCE, fontWeight: 600 }}>
                       {r.expiration_date || '—'}
                       {r.term_status?.state === 'expired'
                         ? <span style={{ display: 'block', fontSize: 9, fontWeight: 400, letterSpacing: 0.3 }}>expired</span>
@@ -585,8 +590,10 @@ function ClientDocument({ audit, report, onBack }) {
           which is what a licence number in a footer has to do. */}
       <div className="pdf-footer" style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 8.5, color: '#6B7280', padding: '8px 40px', borderTop: '1px solid ' + BRAND.gold, background: WHITE }}>
         <BrandLogo tone="light" width={86} style={{ flexShrink: 0 }} />
+        {/* The mark alone does not name the agency in text, and the licence
+            line has to be attributable to a named producer on its face. */}
         <div style={{ lineHeight: 1.5 }}>
-          <div>{BRAND.licence}</div>
+          <div>{BRAND.wordmark} · {BRAND.licence}</div>
           <div>{BRAND.contact}</div>
         </div>
       </div>

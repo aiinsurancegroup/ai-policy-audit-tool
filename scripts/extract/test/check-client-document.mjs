@@ -93,6 +93,10 @@ expect('  no tick glyph', body.includes('✓'), false);
 expect('  no bang glyph', /'!'|>!</.test(body), false);
 expect('cover carries the logo, not a text wordmark', /<BrandLogo tone="light" width=\{180\}/.test(body), true);
 expect('footer carries a small logo', /<BrandLogo tone="light" width=\{86\}/.test(body), true);
+// The mark alone does not name the agency in text, and a licence number has to
+// be attributable to a named producer on its face.
+expect('  and names the agency beside it', body.includes('{BRAND.wordmark} · {BRAND.licence}'), true);
+expect('expiry dates do not wrap', /whiteSpace: 'nowrap', color: r\.term_status/.test(body), true);
 expect('section rules are gold', body.includes("borderBottom: '1px solid ' + BRAND.gold"), true);
 expect('section headings are gold', /section: \{[^}]*color: BRAND\.gold/.test(body), true);
 expect('expired terms are muted red', body.includes('TERM_EXPIRED'), true);
