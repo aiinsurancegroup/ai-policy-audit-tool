@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import crypto from 'node:crypto';
 
 export default async function handler(req, res) {
   // Open item: this still echoes "*", so any site can call it and read the
@@ -35,7 +36,13 @@ export default async function handler(req, res) {
     let portalLink;
     try {
       const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-      const token = Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9) + Math.random().toString(36).substr(2, 9);
+      // Was three Math.random() draws. This endpoint mints a token on every
+      // call and allowed any origin, which together made it the cheapest way to
+      // harvest outputs from a predictable PRNG and infer the next token issued
+      // to a real client.
+      const token = crypto.randomBytes(32).toString('hex');
+      const issuedAt = new Date();
+      const expiresAt = new Date(issuedAt.getTime() + 90 * 86400000);
       const { data: audit, error: auditErr } = await supabase.from('audits').insert({
         client_name: company || name || 'Assessment Lead',
         client_industry: industry || 'Other',
@@ -44,6 +51,8 @@ export default async function handler(req, res) {
         status: 'DRAFT',
         file_count: 0,
         client_token: token,
+        client_token_issued_at: issuedAt.toISOString(),
+        client_token_expires_at: expiresAt.toISOString(),
       }).select().single();
       // The previous version destructured only `data` and never looked at
       // `error`, so a rejected insert fell through to the tokenless fallback.
