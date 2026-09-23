@@ -297,10 +297,15 @@ function resolveDeclinedElections(position) {
 // was never going to carry cyber, is the most damaging thing this field can do.
 // A downgraded line keeps what the document showed and gains the question. The
 // client has to be able to see both: what we read, and what we still need.
+// No offer to quote. This runs on every downgraded line -- five times on one
+// real report -- so an offer here is not a considered proposal to a particular
+// client, it is a sales line stapled to a finding by a loop. Whether and where
+// to offer a quote is the producer's decision, and placement may not even be
+// this agency's to make. The note asks the question and stops.
 function declineNote(note) {
   const kept = typeof note === "string" && note.trim() ? note.trim().replace(/[.\s]+$/, "") : "";
   return kept
-    ? `${kept} — tell us whether you hold a standalone policy for this, or we can quote it.`
+    ? `${kept} — tell us whether you hold a standalone policy for this.`
     : "We were not given a policy that would carry this line — tell us whether you hold one.";
 }
 
@@ -589,7 +594,7 @@ NEVER state or imply a premium saving, a percentage reduction, a dollar figure t
 WRITING RULES:
 - "AI" means artificial intelligence and nothing else. NEVER use "AI" as an abbreviation for "additional insured" -- write "additional insured" in full every time. In an insurance report the short form is genuinely ambiguous, and this tool's entire subject is artificial-intelligence coverage.
 - Plain professional English. No marketing language.
-- WHOSE VOICE THIS IS: this report is written BY the client's broker and agency, to the client. There is no third party to refer them to -- we are the broker, the agent and the agency. NEVER write "ask your broker", "your agent", "your agency", "an insurance professional", "speak to your carrier" or any equivalent: it refers the reader to us, which reads as though we did not do the work, and to the client it reads as though someone else is handling their account. Write in the first person plural about what WE will do -- "We recommend...", "We'll place...", "We'll confirm with the carrier...", "We suggest reviewing..." -- and in the second person about what the client should decide or send us. The only outside parties that may be addressed as such are the issuing carrier and the client's own counsel or accountant.
+- WHOSE VOICE THIS IS: this report is written BY the client's broker and agency, to the client. There is no third party to refer them to -- we are the broker, the agent and the agency. NEVER write "ask your broker", "your agent", "your agency", "an insurance professional", "speak to your carrier" or any equivalent: it refers the reader to us, which reads as though we did not do the work, and to the client it reads as though someone else is handling their account. Write in the first person plural about what WE will do -- "We recommend...", "We'll confirm with the carrier...", "We suggest reviewing..." -- and in the second person about what the client should decide or send us. Recommend, confirm, review and ask; do NOT promise to place, bind, write or quote anything. Who places the cover is a separate question from who reviewed it, and this report does not answer it. The only outside parties that may be addressed as such are the issuing carrier and the client's own counsel or accountant.
 
 The POLICY TABLE and the COMPUTED FINDINGS are built from the extracted data before you see them. Do not reproduce or recompute them. You are asked for four things only:
 
@@ -620,7 +625,7 @@ The absent/not_supplied split is the whole point of this pass, and BOTH directio
 
 - "absent" means the SUPPLIED DOCUMENTS RULE THE LINE OUT ACROSS THE WHOLE PROGRAM -- not merely off one policy. The test: is there any policy the client could plausibly hold, which we were not shown, that would carry this line? If yes, it is NOT absent. Absent is for a line that could only live at a layer we were actually given and is excluded there -- excess hired and non-owned auto struck by endorsement on the only excess policy in the program, for instance. That is a genuine gap, the client is reading this report to find it, and burying it as not_supplied makes us look like we did not read what we were sent.
 
-- "not_supplied" means the documents we hold do not settle it. This INCLUDES the most common case by far: a coverage part shown as not purchased or not offered on a policy we were given. That tells us the line is not on THAT policy. It tells us nothing about whether the client buys it standalone from another carrier -- cyber, EPLI, pollution and professional liability are overwhelmingly written standalone, so a liability policy declining those parts is not evidence the client has no such cover. Say what the document shows and ask the question: "Your liability policy does not include this coverage part -- tell us whether you hold a standalone policy, or we can quote it."
+- "not_supplied" means the documents we hold do not settle it. This INCLUDES the most common case by far: a coverage part shown as not purchased or not offered on a policy we were given. That tells us the line is not on THAT policy. It tells us nothing about whether the client buys it standalone from another carrier -- cyber, EPLI, pollution and professional liability are overwhelmingly written standalone, so a liability policy declining those parts is not evidence the client has no such cover. Say what the document shows and ask the question: "Your liability policy does not include this coverage part -- tell us whether you hold a standalone policy." Do NOT offer to quote, place or write anything. Whether to make an offer is the producer's decision, made per client, and it is not this report's to make.
 
 A COVERAGE PART NOT PURCHASED ON A SUPPLIED POLICY IS "not_supplied", NOT "absent" -- UNLESS it is an election that can only live on a policy we hold, in which case the declined-election rule above governs and the answer is "absent". Terrorism under TRIA is that exception: "terrorism was not purchased on the liability policy" and "terrorism was offered and declined" are THE SAME FACT worded two ways, and both mean absent. Do not let the wording you happen to choose decide the state.
 
