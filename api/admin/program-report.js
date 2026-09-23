@@ -233,6 +233,35 @@ const LINE_HOST_TYPES = [
   [/general liability|premises|products/i, ["gl", "products"]],
 ];
 
+// A note describing the client NOT having something cannot support a state of
+// "present". The clearest case is a declined election: terrorism under TRIA is
+// offered on a policy and taken or not on that same policy, so a declined offer
+// means no terrorism cover -- and recording it as present because the
+// underlying policy exists tells the client they hold something they do not.
+// That direction is the more dangerous of the two, because a client acts on it.
+//
+// Only strong decline language counts, and only where the note carries no sign
+// of the coverage actually being in force. A note reading "In force with
+// Ironshore; the insured declined the higher limit option" describes a real
+// coverage and must survive untouched.
+const DECLINED = /\b(declined|not elected|did not elect|rejected|not purchased|not bought|waived|opted out|not taken)\b/i;
+const IN_FORCE = /\$[\d,]|\bin force\b|\bwritten with\b|\bcarried\b|\bcovered (at|by|under|for)\b|\blimits? of\b|\bbound\b/i;
+
+function resolveDeclinedElections(position) {
+  const flipped = [];
+  const resolved = position.map((p) => {
+    if (p?.state !== "present" || typeof p.note !== "string") return p;
+    if (!DECLINED.test(p.note) || IN_FORCE.test(p.note)) return p;
+    flipped.push(p.line);
+    // Marked absent here and then passed through constrainAbsent, which decides
+    // whether the documents can support that: an election on a policy we hold
+    // stays absent, while a standalone line falls on to not_supplied. The two
+    // guards compose, so neither has to know about the other's cases.
+    return { ...p, state: "absent" };
+  });
+  return { position: resolved, flipped };
+}
+
 // Downgrade "absent" to "not_supplied" wherever the documents cannot support
 // it. Downgrade only, never the reverse: this can make the report claim less
 // than the model wanted, never more, so a misfire costs a question rather than
@@ -506,7 +535,7 @@ RESPOND ONLY with this JSON:
 
   "program_synthesis": [{"finding": "a program-level point drawn from the per-policy analyses together", "evidence": "which policies and what in them", "severity": "HIGH|MODERATE|LOW"}],
 
-  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague -- never 'confirm with the client'. Write the note the STATE calls for, and do not let one state's phrasing bleed into another: for absent, say what the documents rule out program-wide ('Your excess policy excludes hired and non-owned autos by endorsement, so nothing sits above them'); for not_supplied where a coverage part was declined on a policy we hold, say BOTH -- what the document shows and what we still need ('Site pollution was not purchased on your liability policy; tell us whether you hold a standalone environmental policy'); for not_supplied where nothing speaks to the line at all, just ask ('We don't have this on file -- send us the current declarations'); for present, one clause on what it is and any term or carve-out worth knowing. A note ending in 'send us...' on a line you marked absent means you picked the wrong state. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
+  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague -- never 'confirm with the client'. Write the note the STATE calls for, and do not let one state's phrasing bleed into another: for absent, say what the documents rule out program-wide ('Your excess policy excludes hired and non-owned autos by endorsement, so nothing sits above them'); for not_supplied where a coverage part was declined on a policy we hold, say BOTH -- what the document shows and what we still need ('Site pollution was not purchased on your liability policy; tell us whether you hold a standalone environmental policy'); for not_supplied where nothing speaks to the line at all, just ask ('We don't have this on file -- send us the current declarations'); for present, one clause on what it is and any term or carve-out worth knowing -- and if what you are about to write is that the coverage was declined or not elected, stop: the state is absent, not present. A note ending in 'send us...' on a line you marked absent means you picked the wrong state. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
 
   "client_recommendations": ["4-8 recommendations in plain language, written to be read BY THE CLIENT. No jargon, no internal sales angles, no figures the documents do not show, and never a premium saving or estimate. Each should say what to do and why it matters in one or two sentences. Refer to a policy by its carrier and line -- 'the General Star excess auto policy' -- NEVER by an upload file name, which the client has never seen. These appear in the client-facing document, so write them as advice to the client, not as notes to the agent. Written in OUR voice as their broker -- 'We recommend raising...', 'We'll confirm the underlying limits with General Star...' -- never 'ask your broker' or 'your agent', because we ARE their broker and there is nobody else to ask."],
 
@@ -516,6 +545,12 @@ RESPOND ONLY with this JSON:
 program_synthesis: 5-8 points. Program-level only -- if a point is true of one policy in isolation it belongs in that policy's own analysis, not here. Include where one policy reports a coverage missing that ANOTHER policy in this audit actually provides; that contradiction is invisible from either document alone and is exactly what this pass is for.
 
 coverage_position: cover every line of business you can see evidence about, plus any a supplied policy refers to.
+
+- "present" means the coverage IS CARRIED. Nothing else. If your own note says the coverage was declined, not elected, not purchased, rejected or excluded, then it is not present and you have contradicted yourself inside one line. Read the note you are about to write before choosing the state: if it describes the client NOT having something, the state is not "present".
+
+A DECLINED ELECTION IS "absent", NOT "present". Where a coverage is offered ON a policy and the insured declines it -- terrorism under TRIA is the standard case -- the election belongs to that policy and nowhere else. Nobody buys TRIA cover from a different carrier: the insurer writing the policy must offer it, and the insured takes it or does not, on that policy. A declined terrorism offer therefore means that policy carries no terrorism cover, and where the policy also excludes terrorism losses that is a real gap the client needs to see. Do not record it as present because the underlying policy exists.
+
+That is different from a coverage part declined on a policy that was never going to carry the line anyway. The test: could the client hold this coverage on a SEPARATE policy from another carrier? Terrorism under TRIA -- no, it is an election on this policy, so declined means absent. Cyber, EPLI, pollution, professional liability -- yes, routinely standalone, so declined here means not_supplied and the rule below applies.
 
 The absent/not_supplied split is the whole point of this pass, and BOTH directions of error are real:
 
@@ -649,10 +684,15 @@ export default async function handler(req, res) {
       row.deductibles = ded && ded.length <= 40 ? ded : (ded ? ded.slice(0, 40) + "…" : null);
     }
 
-    const constrained = constrainAbsent(
-      Array.isArray(model.coverage_position) ? model.coverage_position : [],
-      policyTable
+    // Order matters: resolve contradicted "present" states first, then let the
+    // absent constraint judge the result along with everything else.
+    const declined = resolveDeclinedElections(
+      Array.isArray(model.coverage_position) ? model.coverage_position : []
     );
+    if (declined.flipped.length) {
+      console.log(`[program-report] present -> absent, note showed a declined election, for ${declined.flipped.length} line(s): ${declined.flipped.join("; ")}`);
+    }
+    const constrained = constrainAbsent(declined.position, policyTable);
     if (constrained.downgraded.length) {
       console.log(`[program-report] downgraded absent -> not_supplied for ${constrained.downgraded.length} line(s): ${constrained.downgraded.join("; ")}`);
     }

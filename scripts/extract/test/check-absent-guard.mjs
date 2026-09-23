@@ -18,9 +18,12 @@ const grab = (name) => {
   }
   return out;
 };
-const table = src.slice(src.indexOf('const LINE_HOST_TYPES'), src.indexOf('// Downgrade "absent"'));
-const { constrainAbsent } = await import('data:text/javascript,' + encodeURIComponent(
-  table + grab('constrainAbsent') + '\nexport { constrainAbsent };'
+// Slice each const block up to the next thing, so nothing is emitted twice.
+const table = src.slice(src.indexOf('const LINE_HOST_TYPES'), src.indexOf('// A note describing the client NOT having'));
+const declineConsts = src.slice(src.indexOf('const DECLINED ='), src.indexOf('function resolveDeclinedElections'));
+const { constrainAbsent, resolveDeclinedElections } = await import('data:text/javascript,' + encodeURIComponent(
+  table + declineConsts + grab('constrainAbsent') + grab('resolveDeclinedElections') +
+  '\nexport { constrainAbsent, resolveDeclinedElections };'
 ));
 
 let pass = 0, fail = 0;
@@ -98,11 +101,56 @@ expect('two downgraded', many.downgraded.length, 2);
 expect('  GL itself untouched, it was supplied', many.position[2].state, 'absent');
 expect('the server logs them', src.includes('downgraded absent -> not_supplied'), true);
 
+console.log('\n--- a declined election is absent, not present');
+// The real case: TRIA marked present while its own note said terrorism was
+// offered, declined, and terrorism losses excluded. Nobody buys TRIA from
+// another carrier -- it is an election on the policy that offered it.
+const tria = { line: 'Terrorism (TRIA) on General Liability', state: 'present',
+  note: 'Terrorism coverage was offered and declined; terrorism losses are excluded.' };
+const triaResolved = resolveDeclinedElections([tria]);
+expect('TRIA flips off present', triaResolved.position[0].state, 'absent');
+expect('  and is reported', triaResolved.flipped[0], 'Terrorism (TRIA) on General Liability');
+// Composition: flipped to absent, then judged by the host-type rule. The GL
+// policy was supplied and the election lives on it, so absent survives.
+expect('  and survives the absent constraint', constrainAbsent(triaResolved.position, glOnly).position[0].state, 'absent');
+
+console.log('\n--- the two guards compose');
+// A standalone line whose note says declined should end on not_supplied, not
+// absent: neither guard alone gets there, the pair does.
+const declinedCyber = resolveDeclinedElections([
+  { line: 'Cyber Liability', state: 'present', note: 'The cyber coverage part was declined.' },
+]);
+expect('declined cyber leaves present', declinedCyber.position[0].state, 'absent');
+expect('  then falls to not_supplied', constrainAbsent(declinedCyber.position, glOnly).position[0].state, 'not_supplied');
+
+console.log('\n--- a real coverage is never flipped off present');
+// The false positive that matters: a note that mentions declining something
+// OTHER than the line itself, alongside evidence the line is in force.
+for (const note of [
+  'In force with Ironshore to 14 December 2026; the insured declined the higher limit option.',
+  'Written with AIG at a $1M combined single limit.',
+  'Carried at $2M excess of $1M, though terrorism was not purchased.',
+  'Covered under the equipment floater at limits of $2.1M.',
+]) {
+  const r = resolveDeclinedElections([{ line: 'General Liability', state: 'present', note }]);
+  expect(`  "${note.slice(0, 44)}…"`, r.position[0].state, 'present');
+}
+expect('a present line with no note is untouched', resolveDeclinedElections([{ line: 'X', state: 'present' }]).position[0].state, 'present');
+for (const state of ['absent', 'not_supplied', 'unread']) {
+  expect(`  ${state} is not touched either`, resolveDeclinedElections([{ line: 'X', state, note: 'declined' }]).position[0].state, state);
+}
+expect('the server logs the flips', src.includes('present -> absent, note showed a declined election'), true);
+expect('flips run before the absent constraint', src.indexOf('resolveDeclinedElections(') < src.indexOf('constrainAbsent(declined.position'), true);
+
 console.log('\n--- the prompt states the rule too');
 expect('program-wide is the test', src.includes('RULE THE LINE OUT ACROSS THE WHOLE PROGRAM'), true);
 expect('the not-purchased case is named explicitly', src.includes('A COVERAGE PART NOT PURCHASED ON A SUPPLIED POLICY IS "not_supplied"'), true);
 expect('  with the reason it matters', src.includes('no cyber cover when the policy naming that gap'), true);
 expect('audit scope is weighed', src.includes('single-policy audit can almost never support'), true);
+expect('present is defined at all', src.includes('"present" means the coverage IS CARRIED'), true);
+expect('  a declined election is named absent', src.includes('A DECLINED ELECTION IS "absent", NOT "present"'), true);
+expect('  with the reason TRIA is different', src.includes('Nobody buys TRIA cover from a different carrier'), true);
+expect('  and the test that separates the two', src.includes('could the client hold this coverage on a SEPARATE policy'), true);
 expect('no quota is implied', src.includes('a quota'), true);
 // The old exemplar that caused this.
 expect('the wrong exemplar is gone', src.includes('a coverage part marked not purchased or not offered, an exclusion'), false);
