@@ -312,6 +312,50 @@ async function sendLinkEmail(audit, token) {
   if (!r.ok) console.error(`[portal] reissue email failed: ${r.status}`);
 }
 
+// Confirmation that documents arrived. Nothing else.
+//
+// This email is sent the moment a client submits, which is BEFORE anything has
+// been read -- no analysis has run, no agent has looked. So it must not hint at
+// a finding, a risk level, a gap count or a verdict, because at this point none
+// exists, and an email that gestures at results teaches the client to expect
+// them from an automated message. The only claims here are that we have the
+// documents and that a person will read them.
+//
+// No timeframe beyond "shortly": every finding is reviewed by hand, and a
+// number printed in an email becomes a promise the review has to keep.
+//
+// Signed by the agency, not a person. A confirmation sent automatically should
+// not carry an individual's name, because no individual did anything yet.
+async function sendReceiptEmail(audit) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    console.error("[portal] receipt: RESEND_API_KEY not set, nothing sent");
+    return;
+  }
+  if (!audit?.client_email) return;
+
+  const greeting = audit.client_name ? `Hi ${escapeHtml(audit.client_name)},` : "Hello,";
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      from: "The AI Insurance Group <sal@theaiinsurancegroup.com>",
+      to: [audit.client_email],
+      reply_to: "sal@theaiinsurancegroup.com",
+      subject: "We've received your documents",
+      html:
+        `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.65;color:#2C3949;max-width:520px">` +
+        `<p>${greeting}</p>` +
+        `<p>Thank you &mdash; we've received your documents.</p>` +
+        `<p>A licensed agent will review them and be in touch shortly.</p>` +
+        `<p style="color:#5B6573;font-size:13.5px">If you need to reach us before then, just reply to this email.</p>` +
+        `<p style="margin-top:22px">&mdash; The AI Insurance Group</p>` +
+        `</div>`,
+    }),
+  });
+  if (!r.ok) console.error(`[portal] receipt email failed: ${r.status}`);
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -653,6 +697,16 @@ export default async function handler(req, res) {
         },
         signerName
       );
+
+      // Acknowledgement only. Sent after everything is durably recorded, and
+      // awaited but never allowed to fail the request: the client's documents
+      // are already safe, and losing the submission because an email bounced
+      // would be the worse outcome by a wide margin.
+      try {
+        await sendReceiptEmail(audit);
+      } catch (e) {
+        console.error(`[portal] receipt email failed for ${audit.id}: ${e.message}`);
+      }
 
       return res.status(200).json({ ok: true, submitted_at: now });
     }
