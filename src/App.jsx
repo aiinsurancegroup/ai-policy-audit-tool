@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabase';
 import { unreviewedCount, bulkConfirmPatch } from './reviewActions';
+import BrandLogo, { BRAND_NAVY, BRAND_GOLD } from './BrandLogo';
 
 const NAVY = '#1A2B45', GOLD = '#B8972A', DARK_BG = '#0F1923', LIGHT_BG = '#F8F6F1';
 const WHITE = '#FFFFFF', LIGHT_GOLD = '#F5EFE0', MID_GRAY = '#6B7280', LIGHT_GRAY = '#E5E7EB';
@@ -311,13 +312,24 @@ function analysisColumns(result, fallbackType) {
 //
 // agent_notes is never read here. Not filtered, not conditionally hidden:
 // simply never referenced, so no future edit can leak it by flipping a flag.
+// Navy and gold are taken from the logo artwork itself, imported rather than
+// retyped, so the document cannot drift out of register with the mark.
 const BRAND = {
-  navy: '#0F2847',
+  navy: BRAND_NAVY,
+  gold: BRAND_GOLD,
   wordmark: 'The AI Insurance Group',
   subtitle: 'Coverage Review Report',
   preparedBy: 'Prepared by Sal Martorano',
+  licence: 'NJ Insurance Producer License No. 3004245927',
+  contact: 'sal@theaiinsurancegroup.com · 917-981-0245',
   footer: 'The AI Insurance Group · NJ Insurance Producer License No. 3004245927 · sal@theaiinsurancegroup.com · 917-981-0245',
 };
+
+// Muted enough to sit in a table without shouting, distinct enough to read at
+// a glance. Not the app's RED/GREEN, which are UI signal colours and look
+// cheap on a printed page.
+const TERM_EXPIRED = '#9B2C2C';
+const TERM_INFORCE = '#2F6B4F';
 
 const BASIS_NOTE = 'This review is based solely on the documents provided for analysis. A coverage line shown as not provided was not supplied for review and may well be in force. Findings are for informational purposes and do not constitute a coverage determination, legal advice, or a binding coverage opinion. Final coverage interpretations should be confirmed with the issuing carrier.';
 
@@ -354,6 +366,21 @@ function ClientDocument({ audit, report, onBack }) {
     }, text);
   };
 
+  // The soonest term end still ahead of us. Expired policies are excluded --
+  // a date already past is not a renewal to plan for, and showing one as the
+  // next renewal would be worse than showing nothing.
+  const fmtDay = (iso) => {
+    const d = new Date(`${iso}T00:00:00`);
+    return isNaN(d) ? iso : d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+  const nextRenewal = (() => {
+    const upcoming = table
+      .filter(r => r.term_status?.state !== 'expired' && /^\d{4}-\d{2}-\d{2}$/.test(r.expiration_date || ''))
+      .map(r => r.expiration_date)
+      .sort();
+    return upcoming.length ? fmtDay(upcoming[0]) : null;
+  })();
+
   // Dated by when the review was finalized, not by when someone opens it.
   // Using today would mean the same document printed twice carries two
   // different dates, and a client could receive a report dated later than the
@@ -378,11 +405,11 @@ function ClientDocument({ audit, report, onBack }) {
   // size, one caption size. Everything on the page is one of these four.
   const T = {
     display: { fontSize: 34, fontWeight: 600, color: BRAND.navy, letterSpacing: -0.6, lineHeight: 1.15 },
-    section: { fontSize: 10.5, fontWeight: 700, color: BRAND.navy, letterSpacing: 0.9, textTransform: 'uppercase' },
+    section: { fontSize: 10.5, fontWeight: 700, color: BRAND.gold, letterSpacing: 0.9, textTransform: 'uppercase' },
     body: { fontSize: 11.5, lineHeight: 1.75, color: '#374151' },
     caption: { fontSize: 9.5, lineHeight: 1.7, color: '#6B7280' },
   };
-  const rule = { borderBottom: '1px solid ' + BRAND.navy, paddingBottom: 7, marginBottom: 20 };
+  const rule = { borderBottom: '1px solid ' + BRAND.gold, paddingBottom: 7, marginBottom: 20 };
   const Section = ({ title, children, breakBefore }) => (
     <section className={`pdf-keep${breakBefore ? ' pdf-break' : ''}`} style={{ marginBottom: 44 }}>
       <div style={{ ...T.section, ...rule }}>{title}</div>
@@ -403,7 +430,7 @@ function ClientDocument({ audit, report, onBack }) {
       <div style={{ flex: 1, ...T.body, fontSize: 11 }}>{detail || ''}</div>
     </div>
   );
-  const th = { padding: '0 8px 8px', fontSize: 8.5, fontWeight: 700, color: '#6B7280', letterSpacing: 0.6, textTransform: 'uppercase', textAlign: 'left', borderBottom: '1px solid ' + BRAND.navy };
+  const th = { padding: '0 8px 8px', fontSize: 8.5, fontWeight: 700, color: '#6B7280', letterSpacing: 0.6, textTransform: 'uppercase', textAlign: 'left', borderBottom: '1px solid ' + BRAND.gold };
   const cell = { padding: '10px', fontSize: 10.5, color: '#374151', verticalAlign: 'top', lineHeight: 1.5 };
 
   return (
@@ -421,15 +448,46 @@ function ClientDocument({ audit, report, onBack }) {
         {/* Cover. The navy band carries the wordmark; everything below it is
             white space and one large name, which is what makes it read as a
             cover page rather than the top of a web page. */}
-        <div className="pdf-keep">
-          <div style={{ background: BRAND.navy, color: WHITE, padding: '34px 40px 30px' }}>
-            <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: 0.3 }}>{BRAND.wordmark}</div>
-            <div style={{ fontSize: 9.5, marginTop: 7, letterSpacing: 1.8, textTransform: 'uppercase', color: '#9DB4CE' }}>{BRAND.subtitle}</div>
-          </div>
-          <div style={{ padding: '96px 40px 0' }}>
+        <div className="pdf-keep" style={{ padding: '40px 40px 0' }}>
+          <BrandLogo tone="light" width={180} />
+          <div style={{ fontSize: 9.5, marginTop: 12, letterSpacing: 1.8, textTransform: 'uppercase', color: BRAND.gold }}>{BRAND.subtitle}</div>
+
+          <div style={{ marginTop: 84 }}>
             <div style={T.display}>{audit.client_name}</div>
             {audit.client_industry && <div style={{ ...T.body, marginTop: 10, color: '#6B7280' }}>{audit.client_industry}</div>}
-            <div style={{ width: 54, borderBottom: '2px solid ' + BRAND.navy, margin: '32px 0 24px' }} />
+          </div>
+
+          {/* What the review covered, in figures, before any of the detail.
+              Each is counted from the table and the coverage position rather
+              than stated by anyone, so they cannot disagree with the pages
+              that follow. */}
+          <div style={{ marginTop: 30, borderTop: '1px solid ' + BRAND.gold, borderBottom: '1px solid #E5E7EB', padding: '16px 0', display: 'flex', gap: 44, flexWrap: 'wrap' }}>
+            {[
+              ['Policies reviewed', String(table.length)],
+              ['Gaps identified', String(gaps.length)],
+              ['Next renewal', nextRenewal || '—'],
+            ].map(([label, value]) => (
+              <div key={label}>
+                <div style={{ fontSize: 8.5, letterSpacing: 1, textTransform: 'uppercase', color: '#6B7280', fontWeight: 700 }}>{label}</div>
+                <div style={{ fontSize: 17, fontWeight: 600, color: BRAND.navy, marginTop: 5, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Prepared for. Operator-entered, because the named insured on a
+              declarations page is the legal entity and not always the name the
+              client should be addressed by. Renders only when supplied. */}
+          {(audit.named_insured || audit.mailing_address) && (
+            <div style={{ marginTop: 30 }}>
+              <div style={{ ...T.section, marginBottom: 8 }}>Prepared for</div>
+              {audit.named_insured && <div style={{ fontSize: 12.5, fontWeight: 600, color: BRAND.navy, lineHeight: 1.5 }}>{audit.named_insured}</div>}
+              {audit.mailing_address && (
+                <div style={{ ...T.caption, marginTop: 4, whiteSpace: 'pre-line' }}>{audit.mailing_address}</div>
+              )}
+            </div>
+          )}
+
+          <div style={{ marginTop: 34 }}>
             <div style={T.caption}>{longDate}</div>
             <div style={{ ...T.caption, color: '#374151', marginTop: 3 }}>{BRAND.preparedBy}</div>
           </div>
@@ -457,10 +515,13 @@ function ClientDocument({ audit, report, onBack }) {
                         policy up -- the one thing this column is for. */}
                     <td style={{ ...cell, whiteSpace: 'nowrap', fontSize: 10, fontVariantNumeric: 'tabular-nums' }}>{r.policy_number || '—'}</td>
                     <td style={cell}>{r.key_limits || '—'}</td>
-                    <td style={cell}>
+                    {/* An expired term is the one thing in this table a client
+                        must not skim past, and an in-force one is the
+                        reassurance the rest of the row is worth reading. */}
+                    <td style={{ ...cell, color: r.term_status?.state === 'expired' ? TERM_EXPIRED : TERM_INFORCE, fontWeight: 600 }}>
                       {r.expiration_date || '—'}
                       {r.term_status?.state === 'expired'
-                        ? <span style={{ color: '#B91C1C', display: 'block', fontSize: 9.5 }}>expired</span>
+                        ? <span style={{ display: 'block', fontSize: 9, fontWeight: 400, letterSpacing: 0.3 }}>expired</span>
                         : null}
                     </td>
                     <td style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.premium_total || '—'}</td>
@@ -520,8 +581,14 @@ function ClientDocument({ audit, report, onBack }) {
         </div>
       </div>
 
-      <div className="pdf-footer" style={{ textAlign: 'center', fontSize: 9, color: '#6B7280', padding: '10px 14px', borderTop: '1px solid #E5E7EB', background: WHITE }}>
-        {BRAND.footer}
+      {/* Repeats on every printed page (position: fixed in the print sheet),
+          which is what a licence number in a footer has to do. */}
+      <div className="pdf-footer" style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 8.5, color: '#6B7280', padding: '8px 40px', borderTop: '1px solid ' + BRAND.gold, background: WHITE }}>
+        <BrandLogo tone="light" width={86} style={{ flexShrink: 0 }} />
+        <div style={{ lineHeight: 1.5 }}>
+          <div>{BRAND.licence}</div>
+          <div>{BRAND.contact}</div>
+        </div>
       </div>
     </div>
   );
@@ -818,6 +885,12 @@ export default function App() {
   const [clientName, setClientName] = useState('');
   const [clientInd, setClientInd] = useState('');
   const [clientContact, setClientContact] = useState('');
+  // Cover-block fields. Operator-entered: a declarations page names the legal
+  // entity ("... LLC DBA ..."), which is right on paper and wrong on a cover
+  // addressed to the client.
+  const [namedInsured, setNamedInsured] = useState('');
+  const [mailingAddress, setMailingAddress] = useState('');
+  const [coverSaving, setCoverSaving] = useState(false);
   const [clientEmail, setClientEmail] = useState('');
   const [consentOk, setConsentOk] = useState(false);
   const [signerName, setSignerName] = useState('');
@@ -911,6 +984,7 @@ export default function App() {
     const auditResp = await adminApi(adminPw, { action: 'insert', table: 'audits', returnRow: true, payload: {
       client_name: clientName, client_industry: clientInd, client_contact: clientContact,
       client_email: clientEmail, status: 'DRAFT', file_count: files.length, created_by: 'operator',
+      named_insured: namedInsured.trim() || null, mailing_address: mailingAddress.trim() || null,
     }});
     if (!auditResp.ok) { setError('Failed to create audit.'); setLoading(false); setScreen('new-audit'); return; }
     const auditRows = await auditResp.json().catch(() => null);
@@ -962,7 +1036,7 @@ export default function App() {
     setCurAudit(audit); setCurPolicies(pols);
     setProgReport(null); setProgErr('');
     setLoading(false); setScreen('report');
-    setClientName(''); setClientInd(''); setClientContact(''); setClientEmail('');
+    setClientName(''); setClientInd(''); setClientContact(''); setClientEmail(''); setNamedInsured(''); setMailingAddress('');
     setConsentOk(false); setSignerName(''); setSignerTitle(''); setFiles([]);
     const a = {};
     pols.forEach((p, pi) => (p.ai_raw_output?.findings || []).forEach((_, fi) => { a[pi + '-' + fi] = ''; }));
@@ -1187,6 +1261,7 @@ export default function App() {
     const resp = await adminApi(adminPw, { action: 'insert', table: 'audits', returnRow: true, payload: {
       client_name: clientName, client_industry: clientInd, client_contact: clientContact,
       client_email: clientEmail, status: 'DRAFT', file_count: 0, client_token: token,
+      named_insured: namedInsured.trim() || null, mailing_address: mailingAddress.trim() || null,
     }});
     if (!resp.ok) { setError('Failed to create audit.'); return; }
     const rows = await resp.json().catch(() => null);
@@ -1196,7 +1271,7 @@ export default function App() {
     const link = window.location.origin + '?token=' + token;
     setClientLink(link);
     await loadAudits();
-    setClientName(''); setClientInd(''); setClientContact(''); setClientEmail('');
+    setClientName(''); setClientInd(''); setClientContact(''); setClientEmail(''); setNamedInsured(''); setMailingAddress('');
   };
 
   const runAuditFromStorage = async (audit) => {
@@ -1397,6 +1472,54 @@ export default function App() {
   if (screen === 'client-doc') {
     if (!curAudit || curAudit.status !== 'VALIDATED' || !progReport) { setScreen('report'); return null; }
     return <ClientDocument audit={curAudit} report={progReport} onBack={() => setScreen('report')} />;
+  }
+
+  // Cover details. Separate from the audit form because the operator normally
+  // fills these in with the declarations page open, long after the audit was
+  // created -- and because every audit that already exists needs a way to get
+  // them without being recreated.
+  if (screen === 'cover-details') {
+    if (!curAudit) { setScreen('dashboard'); return null; }
+    const saveCover = async () => {
+      setCoverSaving(true);
+      const payload = { named_insured: namedInsured.trim() || null, mailing_address: mailingAddress.trim() || null };
+      const r = await adminApi(adminPw, { action: 'update', table: 'audits', filter: { id: curAudit.id }, payload });
+      setCoverSaving(false);
+      if (!r.ok) { setError('Could not save the cover details.'); return; }
+      setCurAudit(prev => ({ ...prev, ...payload }));
+      await logActivity(adminPw, curAudit.id, 'COVER_DETAILS_UPDATED', {}, valName || 'operator');
+      await loadAudits();
+      setScreen('report');
+    };
+    return (
+      <div style={S.app}>
+        <Hdr right={<button style={S.btnOut} onClick={() => setScreen('report')}>← Back to report</button>} />
+        <div style={S.content}>
+          <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>Cover Details</div>
+          <div style={{ fontSize: 14, color: MID_GRAY, marginBottom: 20, lineHeight: 1.6 }}>
+            These appear in the "Prepared for" block on the client document's cover. Leave them blank and the block does not render.
+          </div>
+          <div style={S.card}>
+            <div style={{ marginBottom: 16 }}>
+              <label style={S.label}>Named Insured</label>
+              <input style={S.input} value={namedInsured} onChange={e => setNamedInsured(e.target.value)} placeholder="As it should appear to the client" />
+              <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 6, lineHeight: 1.5 }}>
+                What the client should be addressed as, which is not always what the declarations page says. A dec page reading
+                "Thomas F. Corbett Associates, LLC DBA Shamrock Materials LLC" is correct on paper and wrong on a cover.
+              </div>
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <label style={S.label}>Mailing Address</label>
+              <textarea style={{ ...S.input, minHeight: 84, resize: 'vertical', fontFamily: 'inherit' }} value={mailingAddress} onChange={e => setMailingAddress(e.target.value)} placeholder={'Street\nCity, ST ZIP'} />
+              <div style={{ fontSize: 12, color: MID_GRAY, marginTop: 6 }}>Line breaks are preserved as typed.</div>
+            </div>
+            <button style={S.actionBtn(coverSaving, { primary: true })} disabled={coverSaving} onClick={saveCover}>
+              {coverSaving ? 'Saving…' : 'Save cover details'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (screen === 'activity-log') return (
@@ -2011,6 +2134,13 @@ export default function App() {
             {/* The client document. Only after Validate & Finalize, and only
                 when a Level 1 report exists to render from -- it makes no call
                 of its own, so without that row there is nothing to print. */}
+            {!isDraft && progReport && (
+              <button style={S.btnOut} onClick={() => {
+                setNamedInsured(a.named_insured || '');
+                setMailingAddress(a.mailing_address || '');
+                setScreen('cover-details');
+              }}>Cover details</button>
+            )}
             {!isDraft && (
               progReport
                 ? <button style={S.btn} onClick={() => { logActivity(adminPw, a.id, 'CLIENT_DOCUMENT_OPENED', {}, valName || 'operator'); setScreen('client-doc'); }}>📄 Client Document</button>
@@ -2096,6 +2226,19 @@ export default function App() {
             <div><label style={S.label}>Industry *</label><select style={S.select} value={clientInd} onChange={e => setClientInd(e.target.value)}><option value="">Select...</option>{INDUSTRIES.map(ind => <option key={ind} value={ind}>{ind}</option>)}</select></div>
             <div><label style={S.label}>Contact Name</label><input style={S.input} value={clientContact} onChange={e => setClientContact(e.target.value)} placeholder="Primary contact" /></div>
             <div><label style={S.label}>Contact Email</label><input style={S.input} value={clientEmail} onChange={e => setClientEmail(e.target.value)} placeholder="email@company.com" /></div>
+          </div>
+          {/* Both appear on the client document's cover. Optional, and editable
+              later from the report screen -- the operator usually has the
+              declarations page open there, not here. */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
+            <div>
+              <label style={S.label}>Named Insured</label>
+              <input style={S.input} value={namedInsured} onChange={e => setNamedInsured(e.target.value)} placeholder="As it should appear to the client" />
+            </div>
+            <div>
+              <label style={S.label}>Mailing Address</label>
+              <textarea style={{ ...S.input, minHeight: 62, resize: 'vertical', fontFamily: 'inherit' }} value={mailingAddress} onChange={e => setMailingAddress(e.target.value)} placeholder={'Street\nCity, ST ZIP'} />
+            </div>
           </div>
         </div>
 
