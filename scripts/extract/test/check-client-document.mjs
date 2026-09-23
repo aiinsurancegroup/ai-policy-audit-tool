@@ -148,17 +148,24 @@ console.log('\n--- absent and not_supplied stay distinct');
 // run had found. Every state that appears in a client section gets an exemplar,
 // or none does.
 const noteField = server.slice(server.indexOf('"note": "one short clause'), server.indexOf('"client_recommendations"'));
-expect('absent has a worked exemplar', noteField.includes('for absent, say what the documents show is not carried'), true);
-expect('not_supplied has one too', noteField.includes('for not_supplied, say what we need from them'), true);
+expect('absent has a worked exemplar', noteField.includes('for absent, say what the documents rule out program-wide'), true);
+expect('not_supplied has one too', noteField.includes('for not_supplied where nothing speaks to the line at all'), true);
+// The declined-coverage-part case needs its own exemplar: it is the one that
+// reads like absent and is not.
+expect('  and the declined-part case has its own', noteField.includes('for not_supplied where a coverage part was declined'), true);
 expect('  and present', noteField.includes('for present, one clause'), true);
 expect('the tell-tale is named', noteField.includes("A note ending in 'send us...' on a line you marked absent"), true);
 // The standing rule pushed only one way: it warned what a wrong "absent" costs
 // and never what a wrong "not_supplied" costs.
 expect('both directions of error are stated', server.includes('BOTH directions of error are real'), true);
-expect('  burying a real gap is named a failure', server.includes('buries the finding they came for'), true);
-expect('  claiming unknown absence still is too', server.includes('claims knowledge we do not have'), true);
+expect('  burying a real gap is named a failure', server.includes('makes us look like we did not read what we were sent'), true);
+expect('  over-asserting absence is named too', server.includes('tells a client to their face that they have no cyber cover'), true);
 expect('evidence decides, not caution', server.includes('The test is what the documents show, NOT how cautious you feel'), true);
-expect('  and a whole list may not default to one state', server.includes('Do not default a whole list to one state'), true);
+// The earlier wording pushed against defaulting a list to one state, which
+// read as pressure to produce some of each. Absence of any absent line is a
+// correct answer when that is what the documents support.
+expect('  but no quota is implied', server.includes('and not a quota'), true);
+expect('  a report with no absent lines can be right', server.includes('is a correct report if that is what the evidence supports'), true);
 
 console.log('\n--- the render keeps the two apart');
 expect('gaps read the absent state', body.includes("position.filter(p => p.state === 'absent')"), true);

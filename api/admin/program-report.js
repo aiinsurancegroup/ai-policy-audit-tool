@@ -209,6 +209,155 @@ function buildPolicyTable(policies, today) {
 //
 // Entirely computed. Where a figure is missing the state says so; nothing here
 // infers adequacy from silence.
+// Which policy types could carry a given line, keyed by a word in the line
+// name. An empty array means no policy type in this system carries that line --
+// it is only ever written standalone, so unless that standalone policy was
+// supplied, its absence cannot be established from anything else.
+//
+// The point of the table is one rule: a line can only be called absent if we
+// were actually given the kind of policy that would carry it. A general
+// liability policy declining its cyber coverage part says the line is not on
+// THAT policy; it is silent on whether the client buys cyber from someone else.
+// Lines that exist ONLY as an election or endorsement on a host policy, never
+// as a standalone policy bought from another carrier. The host-type table below
+// asks "could another policy carry this line", which is the wrong question for
+// these: nobody sells terrorism cover separately, the insurer writing the
+// policy must offer it and the insured takes it or does not, right there.
+//
+// So if the host policy is in the audit, we can see the answer, and the line is
+// eligible to be absent. A null host list means any policy can host it --
+// terrorism is elected on liability, property and package policies alike.
+const ELECTION_LINES = [
+  [/terror|\btria\b|tripra/i, null],
+];
+
+// null       not an election line; the host-type table decides
+// "has_host"  an election whose host policy is in the audit, so we can see it
+// "no_host"   a known election whose host is NOT here, so we cannot know
+function electionStatus(line, suppliedTypes, policyCount) {
+  if (typeof line !== "string") return null;
+  const entry = ELECTION_LINES.find(([re]) => re.test(line));
+  if (!entry) return null;
+  const hosts = entry[1];
+  const present = hosts === null ? policyCount > 0 : hosts.some((t) => suppliedTypes.has(t));
+  return present ? "has_host" : "no_host";
+}
+
+const LINE_HOST_TYPES = [
+  [/\bcyber|data breach|privacy\b/i, ["cyber"]],
+  [/employment practices|\bepli\b/i, ["epli"]],
+  [/professional|errors? (and|&) omissions|\be ?& ?o\b|design.?build/i, ["eo"]],
+  [/directors|\bd ?& ?o\b/i, ["do"]],
+  [/workers.? comp|employers liability/i, ["wc"]],
+  [/pollution|environmental/i, []],
+  [/crime|employee dishonesty|fidelity/i, []],
+  [/cargo/i, []],
+  [/umbrella|excess/i, ["umbrella", "excess_auto"]],
+  [/\bauto|vehicle|fleet/i, ["auto_policy", "excess_auto", "auto_physical_damage"]],
+  [/property|building|business income|inland marine|equipment/i, ["property"]],
+  [/general liability|premises|products/i, ["gl", "products"]],
+];
+
+// A note describing the client NOT having something cannot support a state of
+// "present". The clearest case is a declined election: terrorism under TRIA is
+// offered on a policy and taken or not on that same policy, so a declined offer
+// means no terrorism cover -- and recording it as present because the
+// underlying policy exists tells the client they hold something they do not.
+// That direction is the more dangerous of the two, because a client acts on it.
+//
+// Only strong decline language counts, and only where the note carries no sign
+// of the coverage actually being in force. A note reading "In force with
+// Ironshore; the insured declined the higher limit option" describes a real
+// coverage and must survive untouched.
+const DECLINED = /\b(declined|not elected|did not elect|rejected|not purchased|not bought|waived|opted out|not taken)\b/i;
+const IN_FORCE = /\$[\d,]|\bin force\b|\bwritten with\b|\bcarried\b|\bcovered (at|by|under|for)\b|\blimits? of\b|\bbound\b/i;
+
+function resolveDeclinedElections(position) {
+  const flipped = [];
+  const resolved = position.map((p) => {
+    if (p?.state !== "present" || typeof p.note !== "string") return p;
+    if (!DECLINED.test(p.note) || IN_FORCE.test(p.note)) return p;
+    flipped.push(p.line);
+    // Marked absent here and then passed through constrainAbsent, which decides
+    // whether the documents can support that: an election on a policy we hold
+    // stays absent, while a standalone line falls on to not_supplied. The two
+    // guards compose, so neither has to know about the other's cases.
+    return { ...p, state: "absent" };
+  });
+  return { position: resolved, flipped };
+}
+
+// Downgrade "absent" to "not_supplied" wherever the documents cannot support
+// it. Downgrade only, never the reverse: this can make the report claim less
+// than the model wanted, never more, so a misfire costs a question rather than
+// a false statement to a client.
+//
+// This exists because the prompt alone has been wrong here twice. Telling a
+// client they have no cyber cover, on the strength of a liability policy that
+// was never going to carry cyber, is the most damaging thing this field can do.
+// A downgraded line keeps what the document showed and gains the question. The
+// client has to be able to see both: what we read, and what we still need.
+function declineNote(note) {
+  const kept = typeof note === "string" && note.trim() ? note.trim().replace(/[.\s]+$/, "") : "";
+  return kept
+    ? `${kept} — tell us whether you hold a standalone policy for this, or we can quote it.`
+    : "We were not given a policy that would carry this line — tell us whether you hold one.";
+}
+
+function constrainAbsent(position, policyTable) {
+  const suppliedTypes = new Set(policyTable.map((r) => r.policy_type).filter(Boolean));
+  const downgraded = [], upgraded = [];
+  const constrained = position.map((p) => {
+    const election = electionStatus(p?.line, suppliedTypes, policyTable.length);
+
+    // "not_supplied" means we cannot know. For an election declined on a host
+    // policy we are holding, we do know: the document says so.
+    //
+    // THIS IS THE ONLY PLACE IN THIS FILE THAT RAISES A CLAIM, AND IT IS AN
+    // EXCEPTION, NOT A PRECEDENT. Every other guard here may only ever claim
+    // less than the model did -- a wrong downgrade costs a question, a wrong
+    // upgrade puts a false statement in front of a client. This one is allowed
+    // because all three conditions together leave nothing unknown: the line can
+    // exist ONLY as an election on a host policy, that host policy is in this
+    // audit, and the note states the decline outright. Any one of them missing
+    // and the answer is not established.
+    //
+    // Do not copy this shape to another guard. A future upgrade needs the same
+    // three-part conjunction -- a line whose only possible home we hold, plus
+    // document evidence of the answer -- and the owner's explicit approval
+    // before it ships. Loosening any leg of it is how a report starts telling
+    // clients they lack cover they hold.
+    if (p?.state === "not_supplied" && election === "has_host" && DECLINED.test(p.note || "")) {
+      upgraded.push(p.line);
+      return { ...p, state: "absent" };
+    }
+
+    if (p?.state !== "absent" || typeof p.line !== "string") return p;
+
+    // The host policy is in the audit, so the election is visible to us and the
+    // line is eligible to be absent. Without this the host-type table below
+    // finds no policy type that "carries terrorism" -- because none does -- and
+    // knocks a correct absent down to not_supplied.
+    if (election === "has_host") return p;
+    // A known election whose host policy is NOT in the audit: we never saw the
+    // document the election lives on, so nothing about it is established.
+    if (election === "no_host") {
+      downgraded.push(p.line);
+      return { ...p, state: "not_supplied", note: declineNote(p.note) };
+    }
+
+    const entry = LINE_HOST_TYPES.find(([re]) => re.test(p.line));
+    // A line this table does not recognise is left alone: the prompt governs
+    // it, and guessing at an unmapped line would be its own kind of error.
+    if (!entry) return p;
+    const hostTypes = entry[1];
+    if (hostTypes.some((t) => suppliedTypes.has(t))) return p;
+    downgraded.push(p.line);
+    return { ...p, state: "not_supplied", note: declineNote(p.note) };
+  });
+  return { position: constrained, downgraded, upgraded };
+}
+
 function limitAdequacy(policyTable, crossChecks) {
   const layers = crossChecks.underlying_vs_umbrella.map((u) => {
     const top = policyTable.find((r) => r.file_name === u.umbrella_file);
@@ -450,7 +599,7 @@ RESPOND ONLY with this JSON:
 
   "program_synthesis": [{"finding": "a program-level point drawn from the per-policy analyses together", "evidence": "which policies and what in them", "severity": "HIGH|MODERATE|LOW"}],
 
-  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague -- never 'confirm with the client'. Write the note the STATE calls for, and do not let one state's phrasing bleed into another: for absent, say what the documents show is not carried ('The only excess you hold responds to auto claims; nothing sits above your general liability limits'); for not_supplied, say what we need from them ('We don't have this on file -- send us the current declarations'); for present, one clause on what it is and any term or carve-out worth knowing. A note ending in 'send us...' on a line you marked absent means you picked the wrong state. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
+  "coverage_position": [{"line": "line of business, e.g. Commercial Auto", "state": "present|absent|not_supplied|unread", "policy": "the EXACT file name from the policy table, or null. This is an internal key used to look the policy up; it is never shown to anyone.", "note": "one short clause of plain English. THE CLIENT READS THIS, so address them, not a colleague -- never 'confirm with the client'. Write the note the STATE calls for, and do not let one state's phrasing bleed into another: for absent, say what the documents rule out program-wide ('Your excess policy excludes hired and non-owned autos by endorsement, so nothing sits above them'); for not_supplied where a coverage part was declined on a policy we hold, say BOTH -- what the document shows and what we still need ('Site pollution was not purchased on your liability policy; tell us whether you hold a standalone environmental policy'); for not_supplied where nothing speaks to the line at all, just ask ('We don't have this on file -- send us the current declarations'); for present, one clause on what it is and any term or carve-out worth knowing -- and if what you are about to write is that the coverage was declined or not elected, stop: the state is absent, not present. A note ending in 'send us...' on a line you marked absent means you picked the wrong state. NEVER name an upload file here -- a client has never seen those file names and they mean nothing to them."}],
 
   "client_recommendations": ["4-8 recommendations in plain language, written to be read BY THE CLIENT. No jargon, no internal sales angles, no figures the documents do not show, and never a premium saving or estimate. Each should say what to do and why it matters in one or two sentences. Refer to a policy by its carrier and line -- 'the General Star excess auto policy' -- NEVER by an upload file name, which the client has never seen. These appear in the client-facing document, so write them as advice to the client, not as notes to the agent. Written in OUR voice as their broker -- 'We recommend raising...', 'We'll confirm the underlying limits with General Star...' -- never 'ask your broker' or 'your agent', because we ARE their broker and there is nobody else to ask."],
 
@@ -461,11 +610,25 @@ program_synthesis: 5-8 points. Program-level only -- if a point is true of one p
 
 coverage_position: cover every line of business you can see evidence about, plus any a supplied policy refers to.
 
-The absent/not_supplied split is the whole point of this pass, and BOTH directions of error are real:
-- "absent" means the supplied documents affirmatively show the coverage is not carried: a coverage part marked not purchased or not offered, an exclusion that removes the line outright, or a tower whose only excess layer responds to a different line than the one asked about. This is a genuine gap and the client is reading this report to find it. Marking such a line "not_supplied" buries the finding they came for and makes us look like we did not read the documents we were sent.
-- "not_supplied" means no document we were given speaks to the line at all, so we cannot know. Marking such a line "absent" claims knowledge we do not have and costs the client's trust in the whole report.
+- "present" means the coverage IS CARRIED. Nothing else. If your own note says the coverage was declined, not elected, not purchased, rejected or excluded, then it is not present and you have contradicted yourself inside one line. Read the note you are about to write before choosing the state: if it describes the client NOT having something, the state is not "present".
 
-The test is what the documents show, NOT how cautious you feel. Do not default a whole list to one state: a program of five policies will normally produce several of each. Only where the evidence genuinely does not settle it does doubt resolve to "not_supplied".
+A DECLINED ELECTION IS "absent", NOT "present". Where a coverage is offered ON a policy and the insured declines it -- terrorism under TRIA is the standard case -- the election belongs to that policy and nowhere else. Nobody buys TRIA cover from a different carrier: the insurer writing the policy must offer it, and the insured takes it or does not, on that policy. A declined terrorism offer therefore means that policy carries no terrorism cover, and where the policy also excludes terrorism losses that is a real gap the client needs to see. Do not record it as present because the underlying policy exists.
+
+That is different from a coverage part declined on a policy that was never going to carry the line anyway. The test: could the client hold this coverage on a SEPARATE policy from another carrier? Terrorism under TRIA -- no, it is an election on this policy, so declined means absent. Cyber, EPLI, pollution, professional liability -- yes, routinely standalone, so declined here means not_supplied and the rule below applies.
+
+The absent/not_supplied split is the whole point of this pass, and BOTH directions of error are real:
+
+- "absent" means the SUPPLIED DOCUMENTS RULE THE LINE OUT ACROSS THE WHOLE PROGRAM -- not merely off one policy. The test: is there any policy the client could plausibly hold, which we were not shown, that would carry this line? If yes, it is NOT absent. Absent is for a line that could only live at a layer we were actually given and is excluded there -- excess hired and non-owned auto struck by endorsement on the only excess policy in the program, for instance. That is a genuine gap, the client is reading this report to find it, and burying it as not_supplied makes us look like we did not read what we were sent.
+
+- "not_supplied" means the documents we hold do not settle it. This INCLUDES the most common case by far: a coverage part shown as not purchased or not offered on a policy we were given. That tells us the line is not on THAT policy. It tells us nothing about whether the client buys it standalone from another carrier -- cyber, EPLI, pollution and professional liability are overwhelmingly written standalone, so a liability policy declining those parts is not evidence the client has no such cover. Say what the document shows and ask the question: "Your liability policy does not include this coverage part -- tell us whether you hold a standalone policy, or we can quote it."
+
+A COVERAGE PART NOT PURCHASED ON A SUPPLIED POLICY IS "not_supplied", NOT "absent" -- UNLESS it is an election that can only live on a policy we hold, in which case the declined-election rule above governs and the answer is "absent". Terrorism under TRIA is that exception: "terrorism was not purchased on the liability policy" and "terrorism was offered and declined" are THE SAME FACT worded two ways, and both mean absent. Do not let the wording you happen to choose decide the state.
+
+For every other line, marking a declined coverage part absent tells a client to their face that they have no cyber cover when the policy naming that gap was never the policy that would carry it. That is the single most damaging error this field can make, and it is the one to watch for.
+
+Weigh how much of the program you were actually given. A single-policy audit can almost never support "absent" for a standalone line: one document cannot rule out a policy it would never have mentioned. A full program submission supports it far more often, because the absence of a layer across every policy in a complete set is itself evidence.
+
+The test is what the documents show, NOT how cautious you feel, and not a quota: some audits genuinely produce no "absent" at all, and a report of five not_supplied lines and no absent is a correct report if that is what the evidence supports.
 
 agent_notes are INTERNAL and are stripped from anything the client sees.`;
 
@@ -587,6 +750,22 @@ export default async function handler(req, res) {
       row.deductibles = ded && ded.length <= 40 ? ded : (ded ? ded.slice(0, 40) + "…" : null);
     }
 
+    // Order matters: resolve contradicted "present" states first, then let the
+    // absent constraint judge the result along with everything else.
+    const declined = resolveDeclinedElections(
+      Array.isArray(model.coverage_position) ? model.coverage_position : []
+    );
+    if (declined.flipped.length) {
+      console.log(`[program-report] present -> absent, note showed a declined election, for ${declined.flipped.length} line(s): ${declined.flipped.join("; ")}`);
+    }
+    const constrained = constrainAbsent(declined.position, policyTable);
+    if (constrained.upgraded.length) {
+      console.log(`[program-report] not_supplied -> absent, declined election on a host policy in this audit, for ${constrained.upgraded.length} line(s): ${constrained.upgraded.join("; ")}`);
+    }
+    if (constrained.downgraded.length) {
+      console.log(`[program-report] downgraded absent -> not_supplied for ${constrained.downgraded.length} line(s): ${constrained.downgraded.join("; ")}`);
+    }
+
     const result = {
       level: 1,
       generated_for_date: todayStr,
@@ -598,7 +777,10 @@ export default async function handler(req, res) {
         computed,
         synthesis: Array.isArray(model.program_synthesis) ? model.program_synthesis : [],
       },
-      coverage_position: Array.isArray(model.coverage_position) ? model.coverage_position : [],
+      // Constrained in code, not only asked for in the prompt: an "absent" a
+      // single supplied policy cannot support is downgraded before it is
+      // stored, so it can never reach the client document.
+      coverage_position: constrained.position,
       // Client-facing, and the only recommendations the client document may
       // show. Kept in Level 1 because the client PDF renders from this row and
       // makes no call of its own -- so anything it prints has to originate here.
