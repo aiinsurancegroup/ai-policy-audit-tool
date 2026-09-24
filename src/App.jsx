@@ -353,8 +353,12 @@ const BRAND = {
   subtitle: 'Coverage Review Report',
   preparedBy: 'Prepared by Sal Martorano',
   licence: 'NJ Insurance Producer License No. 3004245927',
-  contact: 'sal@theaiinsurancegroup.com · 917-981-0245',
-  footer: 'The AI Insurance Group · NJ Insurance Producer License No. 3004245927 · sal@theaiinsurancegroup.com · 917-981-0245',
+  // The agency line, not a personal mobile. This is a client-facing document,
+  // so the number on it has to be the one the agency answers. The marketing
+  // site keeps the same value in src/contact.js -- separate deployments, so
+  // there are two copies; change both together.
+  contact: 'sal@theaiinsurancegroup.com · 732-314-1093',
+  footer: 'The AI Insurance Group · NJ Insurance Producer License No. 3004245927 · sal@theaiinsurancegroup.com · 732-314-1093',
 };
 
 // Muted enough to sit in a table without shouting, distinct enough to read at
@@ -2205,7 +2209,7 @@ export default function App() {
               solicitation on a document whose whole purpose is an impartial
               coverage review. */}
           <div style={{ fontSize: 15, color: 'rgba(255,255,255,0.85)', maxWidth: 560, margin: '0 auto 20px', lineHeight: 1.7 }}>
-            Questions about this report? Contact The AI Insurance Group — sal@theaiinsurancegroup.com · 917-981-0245.
+            Questions about this report? Contact The AI Insurance Group — sal@theaiinsurancegroup.com · 732-314-1093.
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }} className="no-print">
             {/* The client document. Only after Validate & Finalize, and only
