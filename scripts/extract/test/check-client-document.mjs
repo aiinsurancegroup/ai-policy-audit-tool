@@ -43,9 +43,22 @@ console.log('\n--- branding, exactly as specified');
 expect('wordmark', src.includes("wordmark: 'The AI Insurance Group'"), true);
 expect('subtitle', src.includes("subtitle: 'Coverage Review Report'"), true);
 expect('prepared by', src.includes("preparedBy: 'Prepared by Sal Martorano'"), true);
-expect('licence number in footer', src.includes('NJ Insurance Producer License No. 3004245927'), true);
+// Pinned as the whole footer line, not as "the licence number appears somewhere
+// in the file". The number is in BRAND twice -- once as `licence` and once
+// inside `footer` -- so a file-wide check stayed green with the footer stripped,
+// which a mutation check is how we found out.
+expect('the footer line is intact',
+  src.includes("footer: 'The AI Insurance Group · NJ Insurance Producer License No. 3004245927 · sal@theaiinsurancegroup.com · 732-314-1093'"),
+  true);
+expect('licence number on its own line too',
+  src.includes("licence: 'NJ Insurance Producer License No. 3004245927'"), true);
 expect('contact email', src.includes('sal@theaiinsurancegroup.com'), true);
-expect('phone', src.includes('917-981-0245'), true);
+// The agency line, not the personal mobile it replaced. This pin is why the
+// number on a client-facing PDF cannot drift: 917-981-0245 was changed
+// everywhere on 2026-09-24, and this assertion is what noticed the audit tool's
+// own suite had not been run after that change.
+expect('phone is the agency line', src.includes('732-314-1093'), true);
+expect('  and the personal mobile is gone', src.includes('917-981-0245'), false);
 // Navy and gold come from the logo artwork itself rather than being retyped,
 // so the document cannot drift out of register with the mark.
 const logo = fs.readFileSync('src/BrandLogo.jsx', 'utf8');
@@ -70,9 +83,35 @@ expect('  then the report date', body.includes('report?.generated_for_date'), tr
 expect('cover shows the same date, not today', body.includes('{longDate}') && !body.includes('{today}'), true);
 
 console.log('\n--- no solicitation reaches the client document');
-for (const phrase of ['Alexander', 'Munich Re', "Lloyd's", 'Ready to Close']) {
-  expect(`  no "${phrase}"`, src.includes(phrase) && body.includes(phrase), false);
+// The && here was doing nothing: body is a slice of src, so anything in body is
+// necessarily in src and the conjunction always reduced to body.includes().
+// It read as two checks and was one, and would have silently weakened to "only
+// fails if it is in both" the moment body was pointed at a different file.
+const SOLICITATION = ['Alexander', 'Munich Re', "Lloyd's", 'Ready to Close'];
+for (const phrase of SOLICITATION) {
+  expect(`  no "${phrase}"`, body.includes(phrase), false);
 }
+
+console.log('\n--- nor the generator that writes what the report prints');
+// The client document was the only thing scanned, but the prose it prints comes
+// out of api/admin/program-report.js, which was loaded here and never checked.
+//
+// Lloyd's is exempt in exactly one place: CARRIER_SHORT turns "Certain
+// Underwriters at Lloyd's, London" -- as printed on a client's own declarations
+// page -- into "Lloyd's" for the policy table. That is naming a carrier the
+// client already bought from, which is the opposite of a solicitation, and
+// removing it would break reading real Lloyd's-placed policies. So the exemption
+// is the CARRIER_SHORT block itself rather than the whole file: write "placed at
+// Lloyd's" into a prompt anywhere else and this still fails.
+const shortStart = server.indexOf('const CARRIER_SHORT = [');
+const shortEnd = server.indexOf('];', shortStart) + 2;
+expect('CARRIER_SHORT was located', shortStart > -1 && shortEnd > shortStart, true);
+const serverOutsideCarrierList = server.slice(0, shortStart) + server.slice(shortEnd);
+for (const phrase of SOLICITATION) {
+  expect(`  no "${phrase}"`, serverOutsideCarrierList.includes(phrase), false);
+}
+expect('  and the carrier shortener still knows Lloyd\'s',
+  server.slice(shortStart, shortEnd).includes("Lloyd's"), true);
 
 console.log('\n--- no upload file name can reach the client');
 // coverage_position.policy holds the file name as an internal key. The client
